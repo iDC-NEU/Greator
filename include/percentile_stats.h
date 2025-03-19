@@ -45,7 +45,7 @@ namespace diskann {
         vals.begin(), vals.end(),
         [](const double &left, const double &right) { return left < right; });
 
-    auto retval = vals[(uint64_t)(percentile * ((float) len))];
+    auto retval = vals[(uint64_t) (percentile * ((float) len))];
     vals.clear();
     return retval;
   }

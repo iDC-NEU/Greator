@@ -225,7 +225,7 @@ int search_disk_index(int argc, char** argv) {
     _u64 L = Lvec[test_id];
 
     if (beamwidth <= 0) {
-      //    diskann::cout<<"Tuning beamwidth.." << std::endl;
+      // diskann::cout<<"Tuning beamwidth.." << std::endl;
       optimized_beamwidth =
           optimize_beamwidth(_pFlashIndex, warmup, warmup_num,
                              warmup_aligned_dim, (_u32) L, optimized_beamwidth);
@@ -241,6 +241,7 @@ int search_disk_index(int argc, char** argv) {
     std::vector<uint64_t> query_result_tags_64(recall_at * query_num);
     std::vector<uint32_t> query_result_tags_32(recall_at * query_num);
     auto                  s = std::chrono::high_resolution_clock::now();
+
 #pragma omp parallel for schedule(dynamic, 1)
     for (_s64 i = 0; i < (int64_t) query_num; i++) {
       _pFlashIndex->cached_beam_search(
@@ -249,6 +250,7 @@ int search_disk_index(int argc, char** argv) {
           query_result_dists[test_id].data() + (i * recall_at),
           (uint64_t) optimized_beamwidth, stats + i);
     }
+
     auto                          e = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double> diff = e - s;
     float                         qps =
@@ -286,7 +288,7 @@ int search_disk_index(int argc, char** argv) {
     float recall = 0;
     if (calc_recall_flag) {
       recall = (float) diskann::calculate_recall(
-          (_u32) query_num, tags, gt_dists, (_u32) gt_dim,
+          (_u32) query_num, gt_ids, gt_dists, (_u32) gt_dim,
           query_result_tags[test_id].data(), (_u32) recall_at,
           (_u32) recall_at);
     }

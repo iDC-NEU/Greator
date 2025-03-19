@@ -211,7 +211,7 @@ float     epsilon = 0.01;
 const int A_SIZE = 100;
 const int A_COUNT = 20;
 void      compareDistanceComputationsInt() {
-  // int8_t vec1[] = {127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127,
+       // int8_t vec1[] = {127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127,
   //                 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127,
   //                 127, 127, 127, 127, 127, 127, 127, 127, 127, 127};
   // int8_t vec2[] = {-128, -128, -128, -128, -128, -128, -128, -128,
@@ -223,15 +223,15 @@ void      compareDistanceComputationsInt() {
   srand(time(0));
   bool neg = false;
   for (int i = 0; i < A_SIZE; i++) {
-    auto a = rand() % 10;
-    auto b = rand() % 10;
-    vec1[i] = -a;  // < 0 ? -a : a;
-    vec2[i] = -b;  // < 0 ? -b : b;
+         auto a = rand() % 10;
+         auto b = rand() % 10;
+         vec1[i] = -a;  // < 0 ? -a : a;
+         vec2[i] = -b;  // < 0 ? -b : b;
 
-    neg = neg || vec1[i] < 0 || vec2[i] < 0;
+         neg = neg || vec1[i] < 0 || vec2[i] < 0;
   }
   if (!neg) {
-    diskann::cout << "No negative numbers in test. " << std::endl;
+         diskann::cout << "No negative numbers in test. " << std::endl;
   }
 
   std::cout << "Starting distance computation test for float." << std::endl;
@@ -239,31 +239,31 @@ void      compareDistanceComputationsInt() {
   printArray(vec2, 16);
 
   {
-    // diskann::DistanceL2Int8 dist;
+         // diskann::DistanceL2Int8 dist;
     diskann::AVXDistanceL2Int8 dist;
     float                      dist1 = dist.compare(vec1, vec2, 16);
     float                      dist2 = distanceL2_I(vec1, vec2, 16);
 
     if (abs(dist1 - dist2) > epsilon) {
-      std::cout
-          << "compareDistanceComputationsInt(): L2 Test failed. AVX dist: "
-          << dist1 << " normal dist: " << dist2 << " difference > " << epsilon
-          << std::endl;
+           std::cout
+               << "compareDistanceComputationsInt(): L2 Test failed. AVX dist: "
+               << dist1 << " normal dist: " << dist2 << " difference > " << epsilon
+               << std::endl;
     } else {
-      std::cout << "Two scores are the same. " << std::endl;
+           std::cout << "Two scores are the same. " << std::endl;
     }
   }
   {
-    diskann::DistanceCosineInt8 dist;
-    float                       dist1 = dist.compare(vec1, vec2, 16);
-    float                       dist2 = distanceCosine_I(vec1, vec2, 16);
-    if (abs(dist1 - dist2) > epsilon) {
-      std::cout
-          << "compareDistanceComputationsInt(): Cosine Test failed. AVX dist: "
-          << dist1 << " normal dist: " << dist2 << " difference > " << epsilon
-          << std::endl;
+         diskann::DistanceCosineInt8 dist;
+         float                       dist1 = dist.compare(vec1, vec2, 16);
+         float                       dist2 = distanceCosine_I(vec1, vec2, 16);
+         if (abs(dist1 - dist2) > epsilon) {
+           std::cout
+               << "compareDistanceComputationsInt(): Cosine Test failed. AVX dist: "
+               << dist1 << " normal dist: " << dist2 << " difference > " << epsilon
+               << std::endl;
     } else {
-      std::cout << "Two scores are the same. " << std::endl;
+           std::cout << "Two scores are the same. " << std::endl;
     }
   }
 }

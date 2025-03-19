@@ -22,10 +22,11 @@ namespace diskann {
 
       void rename_edges(const tsl::robin_map<uint32_t, uint32_t>& rename_map);
       void rename_edges(const std::function<uint32_t(uint32_t)> &rename_func);
+      std::vector<std::vector<uint32_t>> graph;
     private:
       bool is_relevant(const uint32_t id);
       // in-memory graph
-      std::vector<std::vector<uint32_t>> graph;
+      
       // locks to access nodes in graph
       std::unique_ptr<std::mutex[]> locks;
       // max nodes 

@@ -29,14 +29,58 @@
 #include <unistd.h>
 #endif
 
-#define Merge_Size 30000000
-#define NUM_INSERT_THREADS 3
+#define NUM_INSERT_THREADS 10
 #define NUM_DELETE_THREADS 1
-#define NUM_SEARCH_THREADS 2
+#define NUM_SEARCH_THREADS 3
+// #define NUM_INSERT_THREADS 1
+// #define NUM_DELETE_THREADS 1
+// #define NUM_SEARCH_THREADS 1
 #define DeleteQPS 1000
 
 int            begin_time = 0;
 diskann::Timer globalTimer;
+// read io info
+static inline void get_io_info(std::string info = "") {
+  static std::map<std::string, long long> previousDataMap;
+  std::string                             pid = std::to_string(getpid());
+  std::string ioStatsFilePath = "/proc/" + pid + "/io";
+
+  std::ifstream                    file(ioStatsFilePath);
+  std::map<std::string, long long> currentDataMap;
+
+  if (file.is_open()) {
+    std::string line;
+    while (std::getline(file, line)) {
+      size_t delimiterPos = line.find(':');
+      if (delimiterPos != std::string::npos) {
+        std::string key = line.substr(0, delimiterPos);
+        std::string valueString = line.substr(delimiterPos + 1);
+        long long   value = std::stoull(valueString);
+        currentDataMap[key] = value;
+      }
+    }
+
+    file.close();
+
+    // print diff value
+    for (const auto& entry : currentDataMap) {
+      printf(" %s%s(GB): %.2f\n", info.c_str(), entry.first.c_str(),
+             entry.second / 1024.0 / 1024 / 1024);
+      if (previousDataMap.count(entry.first) > 0) {
+        long long diff = entry.second - previousDataMap[entry.first];
+        printf(" @%s%s(GB): %.2f\n", info.c_str(), entry.first.c_str(),
+               diff / 1024.0 / 1024 / 1024);
+      } else {
+        printf(" @%s%s(GB): %.2f\n", info.c_str(), entry.first.c_str(),
+               entry.second / 1024.0 / 1024 / 1024);
+      }
+    }
+
+    previousDataMap = currentDataMap;
+  } else {
+    std::cerr << "Failed to open file: " << ioStatsFilePath << std::endl;
+  }
+}
 
 // acutually also shows disk size
 void ShowMemoryStatus() {
@@ -52,27 +96,6 @@ void ShowMemoryStatus() {
 
   std::cout << "memory current time: " << current_time << " RSS : " << rss
             << " KB" << std::endl;
-  // char           dir[] = "/home/fresh/update_store/store_diskann_100m";
-  // DIR*           dp;
-  // struct dirent* entry;
-  // struct stat    statbuf;
-  // long           dir_size = 0;
-
-  // if ((dp = opendir(dir)) == NULL) {
-  //   fprintf(stderr, "Cannot open dir: %s\n", dir);
-  //   exit(0);
-  // }
-
-  // chdir(dir);
-
-  // while ((entry = readdir(dp)) != NULL) {
-  //   lstat(entry->d_name, &statbuf);
-  //   dir_size += statbuf.st_size;
-  // }
-  // chdir("..");
-  // closedir(dp);
-  // dir_size /= (1024 * 1024);
-  // std::cout << "disk usage : " << dir_size << " MB" << std::endl;
 }
 
 std::string convertFloatToString(const float value, const int precision = 0) {
@@ -138,15 +161,19 @@ void sync_search_kernel(T* query, size_t query_num, size_t query_aligned_dim,
                         std::string&                   truthset_file,
                         tsl::robin_set<TagT>& inactive_tags, int curCount,
                         bool merged, bool calRecall) {
+  auto search_timer = std::chrono::high_resolution_clock::now();
+
   unsigned* gt_ids = NULL;
   float*    gt_dists = NULL;
+  unsigned* gt_tags = nullptr;
   size_t    gt_num, gt_dim;
 
   if (calRecall) {
     std::cout << "current truthfile: " << truthset_file << std::endl;
-    // diskann::load_truthset(truthset_file, gt_ids, gt_dists, gt_num, gt_dim);
+    diskann::load_truthset(truthset_file, gt_ids, gt_dists, gt_num, gt_dim,
+                           &gt_tags);
+    std::cout << "load truthset over" << std::endl;
   }
-
   float* query_result_dists = new float[recall_at * query_num];
   TagT*  query_result_tags = new TagT[recall_at * query_num];
 
@@ -173,7 +200,8 @@ void sync_search_kernel(T* query, size_t query_num, size_t query_aligned_dim,
 #pragma omp parallel for num_threads(NUM_SEARCH_THREADS)
   for (int64_t i = 0; i < (int64_t) query_num; i++) {
     auto qs = std::chrono::high_resolution_clock::now();
-    stats[i].n_current_used = 8;
+
+    stats[i].n_current_used = std::numeric_limits<double>::max();
     sync_index.search_sync(query + i * query_aligned_dim, recall_at, L,
                            query_result_tags + i * recall_at,
                            query_result_dists + i * recall_at, stats + i);
@@ -181,7 +209,6 @@ void sync_search_kernel(T* query, size_t query_num, size_t query_aligned_dim,
     auto qe = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double> diff = qe - qs;
     latency_stats[i] = diff.count() * 1000;
-    std::this_thread::sleep_for(std::chrono::milliseconds(2));
   }
   auto e = std::chrono::high_resolution_clock::now();
 
@@ -193,22 +220,30 @@ void sync_search_kernel(T* query, size_t query_num, size_t query_aligned_dim,
   if (calRecall) {
     if (merged) {
       std::string cur_result_path =
-          "/home/sosp/result_overall_spacev_diskann" + std::to_string(current_time) + "merged.bin";
+          "/data/linsy/Cout/overall_res/"
+          "result_overall_diskann" +
+          std::to_string(current_time) + "merged.bin";
       save_bin_test<TagT>(cur_result_path, query_result_tags,
                           query_result_dists, query_num, recall_at);
     } else {
       std::string cur_result_path =
-          "/home/sosp/result_overall_spacev_diskann" + std::to_string(current_time) + ".bin";
+          "/data/linsy/Cout/overall_res/"
+          "result_overall_diskann" +
+          std::to_string(current_time) + ".bin";
       save_bin_test<TagT>(cur_result_path, query_result_tags,
                           query_result_dists, query_num, recall_at);
     }
 
-    // recall = diskann::calculate_recall(query_num, gt_ids, gt_dists, gt_dim,
-    //                                    query_result_tags, recall_at,
-    //                                    recall_at, inactive_tags);
+    recall = diskann::calculate_recall(query_num, gt_ids, gt_dists, gt_dim,
+                                       query_result_tags, recall_at, recall_at,
+                                       inactive_tags);
   }
 
-  std::cout << "search current time: " << current_time << std::endl;
+  auto search_time = std::chrono::high_resolution_clock::now();
+  std::chrono::duration<double> diff_search = search_time - search_timer;
+  std::cout << "search current time: " << diff_search.count()
+            << " search use time: " << diff.count() << " recall compute use "
+            << diff_search.count() - diff.count() << std::endl;
 
   float mean_ios = (float) diskann::get_mean_stats(
       stats, query_num,
@@ -220,15 +255,15 @@ void sync_search_kernel(T* query, size_t query_num, size_t query_aligned_dim,
                                         latency_stats.end(), 0)) /
                    (float) query_num
             << std::setw(12)
-            << (float) latency_stats[(_u64)(0.50 * ((double) query_num))]
+            << (float) latency_stats[(_u64) (0.50 * ((double) query_num))]
             << std::setw(12)
-            << (float) latency_stats[(_u64)(0.90 * ((double) query_num))]
+            << (float) latency_stats[(_u64) (0.90 * ((double) query_num))]
             << std::setw(12)
-            << (float) latency_stats[(_u64)(0.95 * ((double) query_num))]
+            << (float) latency_stats[(_u64) (0.95 * ((double) query_num))]
             << std::setw(12)
-            << (float) latency_stats[(_u64)(0.99 * ((double) query_num))]
+            << (float) latency_stats[(_u64) (0.99 * ((double) query_num))]
             << std::setw(12)
-            << (float) latency_stats[(_u64)(0.999 * ((double) query_num))]
+            << (float) latency_stats[(_u64) (0.999 * ((double) query_num))]
             << std::setw(12) << recall << std::setw(12) << mean_ios
             << std::endl;
 
@@ -238,8 +273,15 @@ void sync_search_kernel(T* query, size_t query_num, size_t query_aligned_dim,
 
 template<typename T, typename TagT>
 void merge_kernel(diskann::MergeInsert<T, TagT>& sync_index,
-                  std::string&                   save_path) {
-  sync_index.final_merge();
+                  std::string& save_path, uint32_t id_map = 0) {
+  diskann::Timer merget;
+  sync_index.final_merge(id_map);
+  double mt = ((double) merget.elapsed()) / (1000000.0);
+  std::cout << "Merge_kernel use " << mt << " s." << std::endl;
+  std::cout << "_________________________Over_merge_kernel________________"
+               "_________"
+            << std::endl;
+  std::cout << "Merge Done " << std::endl;
 }
 
 template<typename T, typename TagT>
@@ -259,7 +301,7 @@ void deletion_kernel(T* data_load, diskann::MergeInsert<T, TagT>& sync_index,
     success++;
     delete_latencies[i] = ((double) delete_timer.elapsed());
     if (success == DeleteQPS) {
-      std::this_thread::sleep_for(std::chrono::seconds(1));
+      // std::this_thread::sleep_for(std::chrono::seconds(1));
       success = 0;
     }
   }
@@ -270,19 +312,19 @@ void deletion_kernel(T* data_load, diskann::MergeInsert<T, TagT>& sync_index,
   std::cout << "Mem index deletion time : " << timer.elapsed() / 1000 << " ms"
             << std::endl
             << "10th percentile deletion time : "
-            << delete_latencies[(size_t)(0.10 * ((double) npts))] << " microsec"
-            << std::endl
+            << delete_latencies[(size_t) (0.10 * ((double) npts))]
+            << " microsec" << std::endl
             << "50th percentile deletion time : "
-            << delete_latencies[(size_t)(0.5 * ((double) npts))] << " microsec"
+            << delete_latencies[(size_t) (0.5 * ((double) npts))] << " microsec"
             << std::endl
             << "90th percentile deletion time : "
-            << delete_latencies[(size_t)(0.90 * ((double) npts))] << " microsec"
-            << std::endl
+            << delete_latencies[(size_t) (0.90 * ((double) npts))]
+            << " microsec" << std::endl
             << "99th percentile deletion time : "
-            << delete_latencies[(size_t)(0.99 * ((double) npts))] << " microsec"
-            << std::endl
+            << delete_latencies[(size_t) (0.99 * ((double) npts))]
+            << " microsec" << std::endl
             << "99.9th percentile deletion time : "
-            << delete_latencies[(size_t)(0.999 * ((double) npts))]
+            << delete_latencies[(size_t) (0.999 * ((double) npts))]
             << " microsec" << std::endl;
 }
 
@@ -306,19 +348,19 @@ void insertion_kernel(T* data_load, diskann::MergeInsert<T, TagT>& sync_index,
   std::cout << "Mem index insertion time : " << timer.elapsed() / 1000 << " ms"
             << std::endl
             << "10th percentile insertion time : "
-            << insert_latencies[(size_t)(0.10 * ((double) npts))] << " microsec"
-            << std::endl
+            << insert_latencies[(size_t) (0.10 * ((double) npts))]
+            << " microsec" << std::endl
             << "50th percentile insertion time : "
-            << insert_latencies[(size_t)(0.5 * ((double) npts))] << " microsec"
+            << insert_latencies[(size_t) (0.5 * ((double) npts))] << " microsec"
             << std::endl
             << "90th percentile insertion time : "
-            << insert_latencies[(size_t)(0.90 * ((double) npts))] << " microsec"
-            << std::endl
+            << insert_latencies[(size_t) (0.90 * ((double) npts))]
+            << " microsec" << std::endl
             << "99th percentile insertion time : "
-            << insert_latencies[(size_t)(0.99 * ((double) npts))] << " microsec"
-            << std::endl
+            << insert_latencies[(size_t) (0.99 * ((double) npts))]
+            << " microsec" << std::endl
             << "99.9th percentile insertion time : "
-            << insert_latencies[(size_t)(0.999 * ((double) npts))]
+            << insert_latencies[(size_t) (0.999 * ((double) npts))]
             << " microsec" << std::endl;
 }
 
@@ -334,6 +376,7 @@ void get_trace(tsl::robin_set<uint32_t>& inactive_set,
   base_reader.open(file_name, std::ios::binary | std::ios::ate);
   base_reader.seekg(0, std::ios::beg);
   base_reader.read((char*) &update_size, sizeof(int));
+  std::cout << "update_size:" << update_size << std::endl;
   delete_tags.clear();
   delete_tags.resize(update_size);
   insert_tags.clear();
@@ -342,7 +385,6 @@ void get_trace(tsl::robin_set<uint32_t>& inactive_set,
   base_reader.read((char*) delete_tags.data(), sizeof(int) * update_size);
   base_reader.seekg((update_size + 1) * sizeof(int), std::ios::beg);
   base_reader.read((char*) insert_tags.data(), sizeof(int) * update_size);
-
   delete[] data_load;
 
   diskann::cout << "Reading trace vectors from bin file " << data_path << "..."
@@ -378,7 +420,8 @@ void update(const std::string& data_path, const unsigned L_mem,
             const unsigned nodes_to_cache, std::string& save_path,
             const std::string& query_file, std::string& truthset_file,
             const int recall_at, _u64 Lsearch, const unsigned beam_width,
-            std::string& trace_file_prefix, diskann::Distance<T>* dist_cmp) {
+            std::string& trace_file_prefix, diskann::Distance<T>* dist_cmp,
+            uint32_t id_map = 0) {
   diskann::Parameters paras;
   paras.Set<unsigned>("L_mem", L_mem);
   paras.Set<unsigned>("R_mem", R_mem);
@@ -386,7 +429,7 @@ void update(const std::string& data_path, const unsigned L_mem,
   paras.Set<unsigned>("L_disk", L_disk);
   paras.Set<unsigned>("R_disk", R_disk);
   paras.Set<float>("alpha_disk", alpha_disk);
-  paras.Set<unsigned>("C", 75);
+  paras.Set<unsigned>("C", 160);
   paras.Set<unsigned>("beamwidth", beam_width);
   // paras.Set<unsigned>("num_pq_chunks", num_pq_chunks);
   paras.Set<unsigned>("nodes_to_cache", 0);
@@ -396,18 +439,19 @@ void update(const std::string& data_path, const unsigned L_mem,
   size_t num_points, dim, aligned_dim;
 
   diskann::Timer timer;
+  // dim = 128;
+  diskann::load_aligned_bin<T>(data_path.c_str(), data_load, num_points, dim,
+                               aligned_dim);
+  std::cout << "Loaded full data for driver: (" << num_points << "," << dim
+            << ") vectors." << std::endl;
 
-  dim = 100;
-
-  // diskann::load_aligned_bin<T>(data_path.c_str(), data_load, num_points, dim,
-  //                              aligned_dim);
-
-  // std::cout << "Loaded full data for driver: (" << num_points << "," << dim
-  //           << ") vectors." << std::endl;
   diskann::Metric               metric = diskann::Metric::L2;
   diskann::MergeInsert<T, TagT> sync_index(paras, dim, save_path + "_mem",
                                            save_path, save_path + "_merge",
                                            dist_cmp, metric, false, save_path);
+  if (id_map == 2) {
+    sync_index._disk_index_prefix_out = save_path;
+  }
 
   std::cout << "Loading queries " << std::endl;
   T*     query = NULL;
@@ -416,14 +460,11 @@ void update(const std::string& data_path, const unsigned L_mem,
                                query_aligned_dim);
 
   std::cout << "Searching before inserts: " << std::endl;
-
-  std::string currentFileName = GetTruthFileName(truthset_file, base_num);
-
   tsl::robin_set<TagT> inactive_tags;
-
+  // truthset_file="/data/linsy/dataset/deep/gt/deep_gt_K10_"
+  std::string currentFileName = truthset_file + std::to_string(0) + ".fbin";
+  std::cout << "Current_GT_File: " << currentFileName << std::endl;
   begin_time = globalTimer.elapsed() / 1.0e6f;
-  ShowMemoryStatus();
-
   sync_search_kernel(query, query_num, query_aligned_dim, recall_at, Lsearch,
                      sync_index, currentFileName, inactive_tags, base_num,
                      false, true);
@@ -435,6 +476,8 @@ void update(const std::string& data_path, const unsigned L_mem,
 
   for (int i = 0; i < batch; i++) {
     std::cout << "Batch: " << i << " Total Batch : " << step << std::endl;
+
+    diskann::Timer        batch_timer;
     std::vector<unsigned> insert_vec;
     std::vector<unsigned> delete_vec;
 
@@ -444,78 +487,47 @@ void update(const std::string& data_path, const unsigned L_mem,
     get_trace<T, TagT>(inactive_tags, delete_vec, insert_vec, trace_file_name,
                        data_load, all_data, dim, aligned_dim);
 
-    std::future<void> insert_future =
-        std::async(std::launch::async, insertion_kernel<T, TagT>, data_load,
-                   std::ref(sync_index), std::ref(insert_vec), aligned_dim);
+    deletion_kernel(data_load, sync_index, delete_vec, aligned_dim, L_mem);
+    std::cout << "_________________________Over_deletion_kernel________________"
+                 "_________"
+              << std::endl;
 
-    std::future<void> delete_future = std::async(
-        std::launch::async, deletion_kernel<T, TagT>, data_load,
-        std::ref(sync_index), std::ref(delete_vec), aligned_dim, L_mem);
-
-    int                total_queries = 0;
-    std::future_status insert_status;
-    std::future_status delete_status;
-    do {
-      insert_status = insert_future.wait_for(std::chrono::seconds(5));
-      delete_status = delete_future.wait_for(std::chrono::seconds(5));
-      if (insert_status == std::future_status::deferred ||
-          delete_status == std::future_status::deferred) {
-        std::cout << "deferred\n";
-      } else if (insert_status == std::future_status::timeout ||
-                 delete_status == std::future_status::timeout) {
-        ShowMemoryStatus();
-        sync_search_kernel(query, query_num, query_aligned_dim, recall_at,
-                           Lsearch, sync_index, currentFileName, inactive_tags,
-                           res, false, false);
-        total_queries += query_num;
-        std::cout << "Queries processed: " << total_queries << std::endl;
-      }
-      if (insert_status == std::future_status::ready) {
-        std::cout << "Insertions complete!\n";
-      }
-      if (delete_status == std::future_status::ready) {
-        std::cout << "Deletions complete!\n";
-      }
-    } while (insert_status != std::future_status::ready ||
-             delete_status != std::future_status::ready);
+    insertion_kernel(data_load, sync_index, insert_vec, aligned_dim);
+    std::cout << "_________________________Over_insertion_kernel_______________"
+                 "__________"
+              << std::endl;
 
     inMmeorySize += insert_vec.size();
 
-    std::cout << "Search after update, current vector number: " << res
-              << std::endl;
-
-    currentFileName.clear();
-
-    currentFileName = GetTruthFileName(truthset_file, res);
-
-    sync_search_kernel(query, query_num, query_aligned_dim, recall_at, Lsearch,
-                       sync_index, currentFileName, inactive_tags, i, false,
-                       true);
-
-    if (i == batch - 1) {
-      std::cout << "Done" << std::endl;
-      exit(0);
-    } else if (inMmeorySize >= Merge_Size) {
-      if (firstMerge) {
-        firstMerge = false;
-      } else {
-        std::future_status merge_status;
-        do {
-          merge_status = merge_future.wait_for(std::chrono::seconds(10));
-          sync_search_kernel(query, query_num, query_aligned_dim, recall_at,
-                             Lsearch, sync_index, currentFileName,
-                             inactive_tags, res, false, false);
-        } while (merge_status != std::future_status::ready);
-      }
-
+    if (inMmeorySize >= MERGE_TH) {
+      get_io_info("begin");
       std::cout << "Begin Merge" << std::endl;
-      merge_future = std::async(std::launch::async, merge_kernel<T, TagT>,
-                                std::ref(sync_index), std::ref(save_path));
-      std::this_thread::sleep_for(std::chrono::seconds(5));
-      // merge_kernel<T, TagT>(sync_index, save_path);
-      std::cout << "Sending Merge" << std::endl;
+      merge_kernel<T, TagT>(sync_index, save_path, id_map);
+      get_io_info("end");
+      std::cout << "IO_all" << std::endl;
       inMmeorySize = 0;
     }
+    double e2e_time = ((double) batch_timer.elapsed()) / (1000000.0);
+    diskann::cout << "Batch #" << i << " use " << e2e_time << " s."
+                  << std::endl;
+    auto copy_file = [](const std::string& src, const std::string& dest) {
+      diskann::Timer copytimer;
+      diskann::cout << "COPY :: " << src << " --> " << dest << "\n";
+      std::ofstream dest_writer(dest, std::ios::binary);
+      std::ifstream src_reader(src, std::ios::binary);
+      dest_writer << src_reader.rdbuf();
+      dest_writer.close();
+      src_reader.close();
+      double e2e_time = ((double) copytimer.elapsed()) / (1000000.0);
+      std::cout << "copy_file_time: " << e2e_time << std::endl;
+    };
+
+    std::string currentFileName =
+        truthset_file + std::to_string(i + 1) + ".fbin";
+    std::cout << "Current_GT_File: " << currentFileName << std::endl;
+    sync_search_kernel(query, query_num, query_aligned_dim, recall_at, Lsearch,
+                       sync_index, currentFileName, inactive_tags, res, true,
+                       true);
   }
   delete[] data_load;
 }
@@ -545,7 +557,8 @@ void build(const std::string& data_path, const unsigned L_mem,
                                aligned_dim);
 
   std::cout << "Loaded full data for driver." << std::endl;
-  // diskann::SyncIndex<T, TagT> sync_index(num_points + 5000, dim, num_shards,
+  // diskann::SyncIndex<T, TagT> sync_index(num_poiznts + 5000, dim,
+  // num_shards,
   //                                        paras, 2, save_path);
   std::cout << "Ran constructor." << std::endl;
   std::vector<TagT> tags(num_start);
@@ -604,6 +617,8 @@ int main(int argc, char** argv) {
   std::string trace_file_prefix(argv[arg_no++]);
   int         step = (int) std::atoi(argv[arg_no++]);
 
+  uint32_t id_map = std::atoi(argv[24]);
+
   if (!updateIndex || buildIndex) {
     if (std::string(argv[1]) == std::string("int8"))
       build<int8_t, unsigned>(argv[2], L_mem, R_mem, alpha_mem, L_disk, R_disk,
@@ -627,25 +642,25 @@ int main(int argc, char** argv) {
   if (updateIndex) {
     if (std::string(argv[1]) == std::string("int8")) {
       diskann::DistanceL2Int8 dist_cmp;
-      update<int8_t, unsigned>(full_data_path, L_mem, R_mem, alpha_mem, L_disk,
-                               R_disk, alpha_disk, step, num_start,
-                               num_pq_chunks, nodes_to_cache, save_path,
-                               query_file, truthset, recall_at, Lsearch,
-                               beam_width, trace_file_prefix, &dist_cmp);
+      update<int8_t, unsigned>(
+          full_data_path, L_mem, R_mem, alpha_mem, L_disk, R_disk, alpha_disk,
+          step, num_start, num_pq_chunks, nodes_to_cache, save_path, query_file,
+          truthset, recall_at, Lsearch, beam_width, trace_file_prefix,
+          &dist_cmp, id_map);
     } else if (std::string(argv[1]) == std::string("uint8")) {
       diskann::DistanceL2UInt8 dist_cmp;
-      update<uint8_t, unsigned>(full_data_path, L_mem, R_mem, alpha_mem, L_disk,
-                                R_disk, alpha_disk, step, num_start,
-                                num_pq_chunks, nodes_to_cache, save_path,
-                                query_file, truthset, recall_at, Lsearch,
-                                beam_width, trace_file_prefix, &dist_cmp);
+      update<uint8_t, unsigned>(
+          full_data_path, L_mem, R_mem, alpha_mem, L_disk, R_disk, alpha_disk,
+          step, num_start, num_pq_chunks, nodes_to_cache, save_path, query_file,
+          truthset, recall_at, Lsearch, beam_width, trace_file_prefix,
+          &dist_cmp, id_map);
     } else if (std::string(argv[1]) == std::string("float")) {
       diskann::DistanceL2 dist_cmp;
       update<float, unsigned>(full_data_path, L_mem, R_mem, alpha_mem, L_disk,
                               R_disk, alpha_disk, step, num_start,
                               num_pq_chunks, nodes_to_cache, save_path,
                               query_file, truthset, recall_at, Lsearch,
-                              beam_width, trace_file_prefix, &dist_cmp);
+                              beam_width, trace_file_prefix, &dist_cmp, id_map);
     } else
       std::cout << "Unsupported type. Use float/int8/uint8" << std::endl;
   }

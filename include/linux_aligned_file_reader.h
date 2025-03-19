@@ -37,6 +37,7 @@ class LinuxAlignedFileReader : public AlignedFileReader {
             bool async = false);
 
   void sequential_write(AlignedRead &write_req, IOContext &ctx);
+  void write(std::vector<AlignedRead> &write_reqs, IOContext &ctx);
 };
 
 #endif

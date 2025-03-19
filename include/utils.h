@@ -42,15 +42,16 @@ typedef int FileHandle;
 // https://github.com/Microsoft/BLAS-on-flash/blob/master/include/utils.h
 // round up X to the nearest multiple of Y
 #define ROUND_UP(X, Y) \
-  ((((uint64_t)(X) / (Y)) + ((uint64_t)(X) % (Y) != 0)) * (Y))
+  ((((uint64_t) (X) / (Y)) + ((uint64_t) (X) % (Y) != 0)) * (Y))
 
-#define DIV_ROUND_UP(X, Y) (((uint64_t)(X) / (Y)) + ((uint64_t)(X) % (Y) != 0))
+#define DIV_ROUND_UP(X, Y) \
+  (((uint64_t) (X) / (Y)) + ((uint64_t) (X) % (Y) != 0))
 
 // round down X to the nearest multiple of Y
-#define ROUND_DOWN(X, Y) (((uint64_t)(X) / (Y)) * (Y))
+#define ROUND_DOWN(X, Y) (((uint64_t) (X) / (Y)) * (Y))
 
 // alignment tests
-#define IS_ALIGNED(X, Y) ((uint64_t)(X) % (uint64_t)(Y) == 0)
+#define IS_ALIGNED(X, Y) ((uint64_t) (X) % (uint64_t) (Y) == 0)
 #define IS_512_ALIGNED(X) IS_ALIGNED(X, 512)
 #define IS_4096_ALIGNED(X) IS_ALIGNED(X, 4096)
 #define METADATA_SIZE \
@@ -124,10 +125,14 @@ inline std::string getTempFilePath(const std::string& workingDir,
 #else
   int         i = 0;
   std::string temp = "temp";
-  do {
-    retFile = workingDir + temp + std::to_string(i) + "_" + suffix;
-    i++;
-  } while (file_exists(retFile));
+  retFile =
+      workingDir + "_" + temp + "/" + temp + std::to_string(i) + "_" + suffix;
+  // do {
+  //   retFile =
+  //       workingDir + "_" + temp + "/" + temp + std::to_string(i) + "_" +
+  //       suffix;
+  //   i++;
+  // } while (file_exists(retFile));
 #endif
   return retFile;
 }
@@ -409,6 +414,8 @@ namespace diskann {
                                   __LINE__);
     }
 
+    std::cout << "actual_file_size: " << actual_file_size << "\n";
+
     ids = new uint32_t[npts * dim];
     reader.read((char*) ids, npts * dim * sizeof(uint32_t));
 
@@ -420,6 +427,7 @@ namespace diskann {
       *tags = new uint32_t[npts * dim];
       reader.read((char*) *tags, npts * dim * sizeof(uint32_t));
     }
+    std::cout << "truthset_type: " << truthset_type << std::endl;
   }
 
 #ifdef EXEC_ENV_OLS

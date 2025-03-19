@@ -98,7 +98,6 @@ namespace diskann {
 
     for (size_t i = 0; i < _max_points + _num_frozen_pts; i++)
       _final_graph[i].clear();
-
     if (_support_eager_delete) {
       _in_graph.reserve(_max_points + _num_frozen_pts);
       _in_graph.resize(_max_points + _num_frozen_pts);
@@ -590,10 +589,10 @@ namespace diskann {
         min_dist = distances[i];
       }
     }
-
+:
     delete[] distances;
-    delete[] center;
-    return min_idx;
+delete[] center;
+return min_idx;
   }
 
   /* iterate_to_fixed_point():
@@ -608,12 +607,13 @@ namespace diskann {
    * best_L_nodes: ids of closest L nodes in list
    */
   template<typename T, typename TagT>
-  std::pair<uint32_t, uint32_t> Index<T, TagT>::iterate_to_fixed_point(
-      const T *node_coords, const unsigned Lsize,
-      const std::vector<unsigned> &init_ids,
-      std::vector<Neighbor>       &expanded_nodes_info,
-      tsl::robin_set<unsigned>    &expanded_nodes_ids,
-      std::vector<Neighbor> &best_L_nodes, bool ret_frozen) {
+  std::pair<uint32_t, uint32_t> Index<T, TagT>
+      : iterate_to_fixed_point(const T *node_coords, const unsigned Lsize,
+                               const std::vector<unsigned> &init_ids,
+                               std::vector<Neighbor>       &expanded_nodes_info,
+                               tsl::robin_set<unsigned>    &expanded_nodes_ids,
+                               std::vector<Neighbor>       &best_L_nodes,
+                               bool                         ret_frozen) {
     best_L_nodes.resize(Lsize + 1);
     for (unsigned i = 0; i < Lsize + 1; i++) {
       best_L_nodes[i].distance = std::numeric_limits<float>::max();
@@ -1111,29 +1111,14 @@ namespace diskann {
               }
             }
           prune_neighbors(node, pool, parameters, pruned_list);
-        }
-        diff = std::chrono::high_resolution_clock::now() - s;
-        sync_time += diff.count();
 
-// prune_neighbors will check pool, and remove some of the points and
-// create a cut_graph, which contains neighbors for point n
-#pragma omp parallel for schedule(dynamic, 64)
-        for (_s64 node_ctr = (_s64) start_id; node_ctr < (_s64) end_id;
-             ++node_ctr) {
-          _u64                   node = visit_order[node_ctr];
-          size_t                 node_offset = node_ctr - start_id;
-          std::vector<unsigned> &pruned_list = pruned_list_vector[node_offset];
+          // prune_neighbors will check pool, and remove some of the points and
+          // create a cut_graph, which contains neighbors for point n
+
           _final_graph[node].clear();
           for (auto id : pruned_list)
             _final_graph[node].emplace_back(id);
-        }
-        s = std::chrono::high_resolution_clock::now();
 
-#pragma omp parallel for schedule(dynamic, 64)
-        for (_s64 node_ctr = start_id; node_ctr < (_s64) end_id; ++node_ctr) {
-          auto                   node = visit_order[node_ctr];
-          _u64                   node_offset = node_ctr - start_id;
-          std::vector<unsigned> &pruned_list = pruned_list_vector[node_offset];
           batch_inter_insert(node, pruned_list, parameters, need_to_sync);
           //          inter_insert(node, pruned_list, parameters, 0);
           pruned_list.clear();

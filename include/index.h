@@ -75,13 +75,13 @@ namespace diskann {
 
     DISKANN_DLLEXPORT void build(
         const char *filename, const size_t num_points_to_load,
-        Parameters &             parameters,
+        Parameters              &parameters,
         const std::vector<TagT> &tags = std::vector<TagT>());
 
-    DISKANN_DLLEXPORT void build(const char * filename,
+    DISKANN_DLLEXPORT void build(const char  *filename,
                                  const size_t num_points_to_load,
-                                 Parameters & parameters,
-                                 const char * tag_filename);
+                                 Parameters  &parameters,
+                                 const char  *tag_filename);
     // Added search overload that takes L as parameter, so that we
     // can customize L on a per-query basis without tampering with "Parameters"
     DISKANN_DLLEXPORT std::pair<uint32_t, uint32_t> search(
@@ -94,7 +94,7 @@ namespace diskann {
 
     DISKANN_DLLEXPORT size_t search_with_tags(const T *query, const uint64_t K,
                                               const unsigned L, TagT *tags,
-                                              float *           distances,
+                                              float            *distances,
                                               std::vector<T *> &res_vectors);
 
     DISKANN_DLLEXPORT size_t search_with_tags(const T *query, const size_t K,
@@ -132,7 +132,7 @@ namespace diskann {
     // if tag not found. Do not call if _eager_delete was called earlier and
     // data was not consolidated. Return -1 if
     DISKANN_DLLEXPORT int lazy_delete(const tsl::robin_set<TagT> &tags,
-                                      std::vector<TagT> &         failed_tags);
+                                      std::vector<TagT>          &failed_tags);
 
     // Delete point from graph and restructure it immediately. Do not call if
     // _lazy_delete was called earlier and data was not consolidated
@@ -160,7 +160,7 @@ namespace diskann {
     const std::vector<std::vector<unsigned>> *get_graph() const {
       return &this->_final_graph;
     }
-    T *                                       get_data();
+    T                                        *get_data();
     const std::unordered_map<unsigned, TagT> *get_tags() const {
       return &this->_location_to_tag;
     };
@@ -179,7 +179,7 @@ namespace diskann {
 
     DISKANN_DLLEXPORT void get_active_tags(tsl::robin_set<TagT> &active_tags);
 
-    DISKANN_DLLEXPORT int   get_vector_by_tag(TagT &tag, T *vec);
+    DISKANN_DLLEXPORT int      get_vector_by_tag(TagT &tag, T *vec);
     DISKANN_DLLEXPORT const T *get_vector_by_tag(const TagT &tag);
 
     // TODO: Debugging ONLY
@@ -208,20 +208,20 @@ namespace diskann {
     std::pair<uint32_t, uint32_t> iterate_to_fixed_point(
         const T *node_coords, const unsigned Lindex,
         const std::vector<unsigned> &init_ids,
-        std::vector<Neighbor> &      expanded_nodes_info,
-        tsl::robin_set<unsigned> &   expanded_nodes_ids,
+        std::vector<Neighbor>       &expanded_nodes_info,
+        tsl::robin_set<unsigned>    &expanded_nodes_ids,
         std::vector<Neighbor> &best_L_nodes, bool ret_frozen = true);
 
     void get_expanded_nodes(const size_t node, const unsigned Lindex,
                             std::vector<unsigned>     init_ids,
-                            std::vector<Neighbor> &   expanded_nodes_info,
+                            std::vector<Neighbor>    &expanded_nodes_info,
                             tsl::robin_set<unsigned> &expanded_nodes_ids);
 
     void inter_insert(unsigned n, std::vector<unsigned> &pruned_list,
                       const Parameters &parameter, bool update_in_graph);
 
     void prune_neighbors(const unsigned location, std::vector<Neighbor> &pool,
-                         const Parameters &     parameter,
+                         const Parameters      &parameter,
                          std::vector<unsigned> &pruned_list);
 
     void occlude_list(std::vector<Neighbor> &pool, const float alpha,
@@ -231,12 +231,12 @@ namespace diskann {
     void occlude_list(std::vector<Neighbor> &pool, const float alpha,
                       const unsigned degree, const unsigned maxc,
                       std::vector<Neighbor> &result,
-                      std::vector<float> &   occlude_factor);
+                      std::vector<float>    &occlude_factor);
 
     void batch_inter_insert(unsigned                     n,
                             const std::vector<unsigned> &pruned_list,
-                            const Parameters &           parameter,
-                            std::vector<unsigned> &      need_to_sync);
+                            const Parameters            &parameter,
+                            std::vector<unsigned>       &need_to_sync);
 
     void link(Parameters &parameters);
 
@@ -271,7 +271,7 @@ namespace diskann {
     T *_data = nullptr;  // coordinates of all base points
     // T *_pq_data =
     //    nullptr;  // coordinates of pq centroid corresponding to every point
-    Distance<T> *   _distance = nullptr;
+    Distance<T>    *_distance = nullptr;
     diskann::Metric _dist_metric;
 
     size_t   _dim;
@@ -287,7 +287,7 @@ namespace diskann {
     bool     _dynamic_index = false;
     bool     _enable_tags = false;
 
-    char * _opt_graph;
+    char  *_opt_graph;
     size_t _node_size;
     size_t _data_len;
     size_t _neighbor_len;

@@ -141,16 +141,14 @@ void writeBinaryVec(const char* outfile, uint32_t numDimensions,
 //}
 
 uint32_t numPointsToCheck(uint32_t numPoints) {
-  uint32_t point01percent = (uint32_t)(0.01 * numPoints / 100);
-  uint32_t point1percent = (uint32_t)(0.1 * numPoints / 100);
-  uint32_t onepercent = (uint32_t)(1 * numPoints / 100);
+  uint32_t point01percent = (uint32_t) (0.01 * numPoints / 100);
+  uint32_t point1percent = (uint32_t) (0.1 * numPoints / 100);
+  uint32_t onepercent = (uint32_t) (1 * numPoints / 100);
 
-  return point01percent > MIN_POINTS_FOR_VALUE_VERIFICATION
-             ? point01percent
-             : point1percent > MIN_POINTS_FOR_VALUE_VERIFICATION
-                   ? point1percent
-                   : onepercent > MIN_POINTS_FOR_VALUE_VERIFICATION ? onepercent
-                                                                    : numPoints;
+  return point01percent > MIN_POINTS_FOR_VALUE_VERIFICATION  ? point01percent
+         : point1percent > MIN_POINTS_FOR_VALUE_VERIFICATION ? point1percent
+         : onepercent > MIN_POINTS_FOR_VALUE_VERIFICATION    ? onepercent
+                                                             : numPoints;
 }
 
 template<typename T>

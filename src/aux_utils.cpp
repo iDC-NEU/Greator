@@ -62,7 +62,7 @@ namespace diskann {
     }
 
     size_t num_blocks = DIV_ROUND_UP(fsize, read_blk_size);
-    char * dump = new char[read_blk_size];
+    char  *dump = new char[read_blk_size];
     for (_u64 i = 0; i < num_blocks; i++) {
       size_t cur_block_size = read_blk_size > fsize - (i * read_blk_size)
                                   ? fsize - (i * read_blk_size)
@@ -99,8 +99,8 @@ namespace diskann {
 
   size_t calculate_num_pq_chunks(double final_index_ram_limit,
                                  size_t points_num, uint32_t dim) {
-    size_t num_pq_chunks =
-        (size_t)(std::floor)(_u64(final_index_ram_limit / (double) points_num));
+    size_t num_pq_chunks = (size_t) (std::floor)(
+        _u64(final_index_ram_limit / (double) points_num));
 
     diskann::cout << "Calculated num_pq_chunks :" << num_pq_chunks << std::endl;
     num_pq_chunks = num_pq_chunks <= 0 ? 1 : num_pq_chunks;
@@ -117,12 +117,14 @@ namespace diskann {
                           float *gs_dist, unsigned dim_gs,
                           unsigned *our_results, unsigned dim_or,
                           unsigned recall_at) {
-    double             total_recall = 0;
+    double total_recall = 0;
+
     std::set<unsigned> gt, res;
 
     for (size_t i = 0; i < num_queries; i++) {
       gt.clear();
       res.clear();
+
       unsigned *gt_vec = gold_std + dim_gs * i;
       unsigned *res_vec = our_results + dim_or * i;
       size_t    tie_breaker = recall_at;
@@ -139,12 +141,14 @@ namespace diskann {
 
       unsigned cur_recall = 0;
       for (auto &v : res) {
-        if (gt.find(v) != gt.end()) {
+        if (res.find(v) != res.end()) {
           cur_recall++;
         }
       }
       total_recall += cur_recall;
     }
+    std::cout << "Recall@" << recall_at << ": " << total_recall / (num_queries)
+              << " %" << std::endl;
     return total_recall / (num_queries) * (100.0 / recall_at);
   }
 
@@ -233,7 +237,7 @@ namespace diskann {
   T *load_warmup(MemoryMappedFiles &files, const std::string &cache_warmup_file,
                  uint64_t &warmup_num, uint64_t warmup_dim,
                  uint64_t warmup_aligned_dim) {
-    T *      warmup = nullptr;
+    T       *warmup = nullptr;
     uint64_t file_dim, file_aligned_dim;
 
     if (files.fileExists(cache_warmup_file)) {
@@ -264,7 +268,7 @@ namespace diskann {
   template<typename T>
   T *load_warmup(const std::string &cache_warmup_file, uint64_t &warmup_num,
                  uint64_t warmup_dim, uint64_t warmup_aligned_dim) {
-    T *      warmup = nullptr;
+    T       *warmup = nullptr;
     uint64_t file_dim, file_aligned_dim;
 
     if (file_exists(cache_warmup_file)) {
@@ -531,7 +535,8 @@ namespace diskann {
     }
 
     std::string merged_index_prefix = mem_index_path + "_tempFiles";
-    int         num_parts =
+
+    int num_parts =
         partition_with_ram_budget<T>(base_file, sampling_rate, ram_budget,
                                      2 * R / 3, merged_index_prefix, 2);
 
@@ -562,11 +567,11 @@ namespace diskann {
       _pvamanaIndex->build(shard_base_file.c_str(), shard_base_pts, paras);
       _pvamanaIndex->save(shard_index_file.c_str());
     }
-
+    std::cout << "merge_shards start" << std::endl;
     diskann::merge_shards(merged_index_prefix + "_subshard-", "_mem.index",
                           merged_index_prefix + "_subshard-", "_ids_uint32.bin",
                           num_parts, R, mem_index_path, medoids_file);
-
+    std::cout << "merge_shards over" << std::endl;
     // delete tempFiles
     for (int p = 0; p < num_parts; p++) {
       std::string shard_base_file =
@@ -631,7 +636,7 @@ namespace diskann {
       if (qps > max_qps && lat_999 < (15000) + mean_latency * 2) {
         max_qps = qps;
         best_bw = cur_bw;
-        cur_bw = (uint32_t)(std::ceil)((float) cur_bw * 1.1f);
+        cur_bw = (uint32_t) (std::ceil)((float) cur_bw * 1.1f);
       } else {
         stop_flag = true;
       }
@@ -721,6 +726,9 @@ namespace diskann {
     max_node_len =
         (((_u64) width_u32 + 1) * sizeof(unsigned)) + (ndims_64 * sizeof(T));
     nnodes_per_sector = SECTOR_LEN / max_node_len;
+
+  diskann:
+    cout << "SECTOR_LEN: " << SECTOR_LEN << std::endl;
 
     diskann::cout << "medoid: " << medoid << "B" << std::endl;
     diskann::cout << "max_node_len: " << max_node_len << "B" << std::endl;
@@ -892,7 +900,7 @@ namespace diskann {
 
   template<typename T, typename TagT>
   bool build_disk_index(const char *dataPath, const char *indexFilePath,
-                        const char *    indexBuildParameters,
+                        const char     *indexBuildParameters,
                         diskann::Metric _compareMetric, bool single_file_index,
                         const char *tag_file) {
     std::stringstream parser;

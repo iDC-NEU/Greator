@@ -16,9 +16,9 @@
 
 template<typename T, typename TagT = uint32_t>
 void dump_to_disk(const T *all_pts, const uint64_t ndims,
-                  const std::string &          filename,
+                  const std::string           &filename,
                   const std::vector<uint32_t> &tags) {
-  T *   new_data = new T[ndims * tags.size()];
+  T    *new_data = new T[ndims * tags.size()];
   TagT *new_tags = new TagT[tags.size()];
 
   std::string tag_filename = filename + ".tags";
@@ -50,7 +50,7 @@ void run(const uint32_t base_count, const uint32_t num_mem_indices,
   std::random_device dev;
   std::mt19937       rng(dev());
 
-  T *      all_points = nullptr;
+  T       *all_points = nullptr;
   uint64_t npts, ndims;
   diskann::load_bin(in_file, all_points, npts, ndims);
   diskann::cout << "Loaded " << npts << " pts x " << ndims << " dims\n";

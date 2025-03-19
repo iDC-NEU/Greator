@@ -54,9 +54,9 @@ std::string           truthset_file = "";
 template<typename T, typename TagT = uint32_t>
 void seed_iter(tsl::robin_set<uint32_t> &active_set,
                tsl::robin_set<uint32_t> &inactive_set,
-               const std::string &       inserted_points_file,
-               const std::string &       inserted_tags_file,
-               tsl::robin_set<TagT> &    deleted_tags) {
+               const std::string        &inserted_points_file,
+               const std::string        &inserted_tags_file,
+               tsl::robin_set<TagT>     &deleted_tags) {
   const uint32_t insert_count = params[std::string("insert_count")];
   const uint32_t delete_count = params[std::string("delete_count")];
   const uint32_t ndims = params[std::string("ndims")];
@@ -110,7 +110,7 @@ void seed_iter(tsl::robin_set<uint32_t> &active_set,
   T *new_pts = new T[(uint32_t) insert_vec.size() * (uint32_t) ndims];
   for (uint64_t idx = 0; idx < insert_vec.size(); idx++) {
     uint32_t actual_idx = insert_vec[idx];
-    T *      point = new T[ndims];
+    T       *point = new T[ndims];
     base_reader.seekg(
         (2 * sizeof(uint32_t) + actual_idx * (uint64_t) ndims * sizeof(T)),
         std::ios::beg);
@@ -163,10 +163,10 @@ float compute_active_recall(const uint32_t *result_tags,
 }
 
 template<typename T, typename TagT = uint32_t>
-void search_disk_index(const std::string &             index_prefix_path,
+void search_disk_index(const std::string              &index_prefix_path,
                        const tsl::robin_set<uint32_t> &inactive_tags,
-                       const std::string &             query_path,
-                       const std::string &             gs_path) {
+                       const std::string              &query_path,
+                       const std::string              &gs_path) {
   std::string pq_prefix = index_prefix_path + "_pq";
   std::string disk_index_file = index_prefix_path + "_disk.index";
   std::string warmup_query_file = index_prefix_path + "_sample_data.bin";
@@ -177,10 +177,10 @@ void search_disk_index(const std::string &             index_prefix_path,
   uint64_t    recall_at = params[std::string("recall_k")];
   uint64_t    search_L = ::Lvec[0];
   // hold data
-  T *       query = nullptr;
+  T        *query = nullptr;
   unsigned *gt_ids = nullptr;
   uint32_t *gt_tags = nullptr;
-  float *   gt_dists = nullptr;
+  float    *gt_dists = nullptr;
   size_t    query_num, query_dim, query_aligned_dim, gt_num, gt_dim;
 
   // load query + truthset
@@ -211,7 +211,7 @@ void search_disk_index(const std::string &             index_prefix_path,
   query_result_ids.resize(recall_at * query_num);
   query_result_dists.resize(recall_at * query_num);
   query_result_tags.resize(recall_at * query_num);
-  diskann::QueryStats * stats = new diskann::QueryStats[query_num];
+  diskann::QueryStats  *stats = new diskann::QueryStats[query_num];
   std::vector<uint64_t> query_result_ids_64(recall_at * query_num);
 #pragma omp parallel for schedule(dynamic, 1)  // num_threads(1)
   for (_s64 i = 0; i < (int64_t) query_num; i++) {
@@ -246,16 +246,16 @@ void search_disk_index(const std::string &             index_prefix_path,
 }
 
 template<typename T, typename TagT = uint32_t>
-void search_kernel(diskann::MergeInsert<T> &       merge_insert,
+void search_kernel(diskann::MergeInsert<T>        &merge_insert,
                    const tsl::robin_set<uint32_t> &active_tags,
                    bool                            print_stats = false) {
   uint64_t recall_at = params[std::string("recall_k")];
 
   // hold data
-  T *       query = nullptr;
+  T        *query = nullptr;
   unsigned *gt_ids = nullptr;
   uint32_t *gt_tags = nullptr;
-  float *   gt_dists = nullptr;
+  float    *gt_dists = nullptr;
   size_t    query_num, query_dim, query_aligned_dim, gt_num, gt_dim;
 
   // const std::string temp = "/mnt/t-adisin/sift_query.bin";
@@ -308,12 +308,12 @@ void search_kernel(diskann::MergeInsert<T> &       merge_insert,
   query_result_dists.resize(recall_at * query_num);
   query_result_tags.resize(recall_at * query_num);
   std::vector<uint32_t> query_result_ids_32(recall_at * query_num);
-
   for (size_t test_id = 0; test_id < ::Lvec.size(); test_id++) {
     diskann::QueryStats *stats = new diskann::QueryStats[query_num];
     uint32_t             L = Lvec[test_id];
     std::vector<double>  latency_stats(query_num, 0);
     auto                 s = std::chrono::high_resolution_clock::now();
+    std::cout << "test_0" << std::endl;
 #pragma omp parallel for num_threads(NUM_SEARCH_THREADS)
     for (_s64 i = 0; i < (int64_t) query_num; i++) {
       auto qs = std::chrono::high_resolution_clock::now();
@@ -326,6 +326,7 @@ void search_kernel(diskann::MergeInsert<T> &       merge_insert,
       latency_stats[i] = diff.count() * 1000;
       //      std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
+    std::cout << "test_1" << std::endl;
     auto                          e = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double> diff = e - s;
     float qps = (float) (((double) query_num) / diff.count());
@@ -345,13 +346,13 @@ void search_kernel(diskann::MergeInsert<T> &       merge_insert,
                                           latency_stats.end(), 0)) /
                      (float) query_num
               << std::setw(12)
-              << (float) latency_stats[(_u64)(0.90 * ((double) query_num))]
+              << (float) latency_stats[(_u64) (0.90 * ((double) query_num))]
               << std::setw(12)
-              << (float) latency_stats[(_u64)(0.95 * ((double) query_num))]
+              << (float) latency_stats[(_u64) (0.95 * ((double) query_num))]
               << std::setw(12)
-              << (float) latency_stats[(_u64)(0.99 * ((double) query_num))]
+              << (float) latency_stats[(_u64) (0.99 * ((double) query_num))]
               << std::setw(12)
-              << (float) latency_stats[(_u64)(0.999 * ((double) query_num))]
+              << (float) latency_stats[(_u64) (0.999 * ((double) query_num))]
               << std::setw(12) << mean_recall << std::setw(12) << mean_ios
               << std::endl;
     delete[] stats;
@@ -370,12 +371,12 @@ void insertion_kernel(diskann::MergeInsert<T> &merge_insert,
               << std::endl;
     exit(-1);
   }
-  T *    data_insert = nullptr;
+  T     *data_insert = nullptr;
   size_t npts, ndim, aligned_dim;
   diskann::load_aligned_bin<T>(mem_pts_file, data_insert, npts, ndim,
                                aligned_dim);
   size_t tag_num, tag_dim;
-  TagT * tag_data;
+  TagT  *tag_data;
   diskann::load_bin<TagT>(mem_tags_file, tag_data, tag_num, tag_dim);
   if (tag_num != npts) {
     std::cout << "In insertion_kernel(), number of tags loaded is not equal to "
@@ -400,13 +401,13 @@ void insertion_kernel(diskann::MergeInsert<T> &merge_insert,
   std::cout << "Mem index insertion time : " << timer.elapsed() / 1000 << " ms"
             << std::endl
             << "10th percentile insertion time : "
-            << insert_latencies[(size_t)(0.10 * ((double) npts))] << " microsec"
-            << std::endl
+            << insert_latencies[(size_t) (0.10 * ((double) npts))]
+            << " microsec" << std::endl
             << "50th percentile insertion time : "
-            << insert_latencies[(size_t)(0.5 * ((double) npts))] << " microsec"
+            << insert_latencies[(size_t) (0.5 * ((double) npts))] << " microsec"
             << "90th percentile insertion time : "
-            << insert_latencies[(size_t)(0.90 * ((double) npts))] << " microsec"
-            << std::endl;
+            << insert_latencies[(size_t) (0.90 * ((double) npts))]
+            << " microsec" << std::endl;
   ::_insertions_done.store(true);
   delete[] data_insert;
   delete[] tag_data;
@@ -434,8 +435,8 @@ void merge_kernel(diskann::MergeInsert<T> &merge_insert) {
 }
 
 template<typename T, typename TagT = uint32_t>
-void run_iter(diskann::MergeInsert<T> & merge_insert,
-              const std::string &       mem_prefix,
+void run_iter(diskann::MergeInsert<T>  &merge_insert,
+              const std::string        &mem_prefix,
               tsl::robin_set<uint32_t> &active_set,
               tsl::robin_set<uint32_t> &inactive_set) {
   // files for mem-DiskANN
@@ -494,13 +495,13 @@ void run_iter(diskann::MergeInsert<T> & merge_insert,
 }
 
 template<typename T, typename TagT = uint32_t>
-void run_single_iter(diskann::MergeInsert<T> & merge_insert,
-                     const std::string &       base_prefix,
-                     const std::string &       merge_prefix,
-                     const std::string &       mem_prefix,
+void run_single_iter(diskann::MergeInsert<T>  &merge_insert,
+                     const std::string        &base_prefix,
+                     const std::string        &merge_prefix,
+                     const std::string        &mem_prefix,
                      tsl::robin_set<uint32_t> &active_set,
                      tsl::robin_set<uint32_t> &inactive_set,
-                     diskann::Distance<T> *    dist_cmp) {
+                     diskann::Distance<T>     *dist_cmp) {
   // files for mem-DiskANN
   std::string mem_pts_file = mem_prefix + ".data_orig";
   std::string mem_tags_file = mem_prefix + ".tags_orig";
@@ -561,14 +562,16 @@ void run_all_iters(std::string base_prefix, std::string merge_prefix,
   uint32_t n_iters = params["n_iters"];
   // load active tags
   tsl::robin_set<uint32_t> active_tags;
-  TagT *                   tag_data;
+  TagT                    *tag_data;
   size_t                   tag_num, tag_dim;
   if (::save_index_as_one_file) {
     uint64_t *metadata;
     size_t    nr, nc;
     diskann::load_bin<uint64_t>(active_tags_file, metadata, nr, nc);
+    std::cout << nr << " " << nc << std::endl;
     diskann::load_bin<TagT>(active_tags_file, tag_data, tag_num, tag_dim,
                             metadata[7]);
+    std::cout << tag_num << " " << tag_dim << std::endl;
   } else {
     diskann::load_bin<TagT>(active_tags_file, tag_data, tag_num, tag_dim);
   }
@@ -577,6 +580,7 @@ void run_all_iters(std::string base_prefix, std::string merge_prefix,
   size_t del_tags_found = 0;
   active_tags.reserve(tag_num);
   for (size_t i = 0; i < tag_num; i++) {
+    std::cout << i << ":" << tag_data[i] << std::endl;
     if (tag_data[i] != std::numeric_limits<uint32_t>::max()) {
       active_tags.insert(tag_data[i]);
       tags_loaded++;
@@ -719,7 +723,7 @@ int main(int argc, char **argv) {
   mem_alpha = alpha_mem;
   merge_alpha = alpha_disk;
   params[std::string("mem_nthreads")] = 32;
-  params[std::string("merge_maxc")] = (uint32_t)(range * 2.5);
+  params[std::string("merge_maxc")] = (uint32_t) (range * 2.5);
   params[std::string("merge_l_index")] = L_disk;
 
   ::query_file = ::query_file + query_path;

@@ -65,7 +65,7 @@ int build_incremental_index(const std::string& data_path, const unsigned L,
 
   tsl::robin_set<unsigned> delete_list;
   while (delete_list.size() < num_incr)
-    delete_list.insert((uint32_t)(rand() % num_points));
+    delete_list.insert((uint32_t) (rand() % num_points));
   diskann::cout << "Deleting " << delete_list.size() << " elements"
                 << std::endl;
   std::vector<unsigned> delete_vector;
@@ -99,7 +99,7 @@ int build_incremental_index(const std::string& data_path, const unsigned L,
 #pragma omp parallel for
     for (_s64 p = 0; p < (_s64) reinsert_vec.size(); p++) {
       index.insert_point(
-          data_load + (size_t)(reinsert_vec[p]) * (size_t) aligned_dim, paras,
+          data_load + (size_t) (reinsert_vec[p]) * (size_t) aligned_dim, paras,
           (reinsert_vec[p]));
     }
     diskann::cout << "Re-incremental time: " << timer.elapsed() / 1000

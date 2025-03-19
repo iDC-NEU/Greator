@@ -166,7 +166,7 @@ int search_memory_index(int argc, char** argv) {
 
     diskann::cout << std::setw(4) << L << std::setw(12) << qps << std::setw(18)
                   << (float) mean_latency << std::setw(15)
-                  << (float) latency_stats[(_u64)(0.999 * (double) query_num)]
+                  << (float) latency_stats[(_u64) (0.999 * (double) query_num)]
                   << std::setw(12) << recall << std::endl;
   }
 

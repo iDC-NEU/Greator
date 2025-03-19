@@ -12,7 +12,59 @@
 namespace {
   typedef struct io_event io_event_t;
   typedef struct iocb     iocb_t;
+  void                    execute_write_io(io_context_t ctx, int fd,
+                                           std::vector<AlignedRead> &read_reqs,
+                                           uint64_t                  n_retries = 0) {
+                       // break-up requests into chunks of size MAX_EVENTS each
+    uint64_t n_iters = ROUND_UP(read_reqs.size(), MAX_EVENTS) / MAX_EVENTS;
+    for (uint64_t iter = 0; iter < n_iters; iter++) {
+                         uint64_t n_ops =
+                             std::min((uint64_t) read_reqs.size() - (iter * MAX_EVENTS),
+                                      (uint64_t) MAX_EVENTS);
+                         std::vector<iocb_t *>    cbs(n_ops, nullptr);
+                         std::vector<io_event_t>  evts(n_ops);
+                         std::vector<struct iocb> cb(n_ops);
+                         for (uint64_t j = 0; j < n_ops; j++) {
+                           io_prep_pwrite(cb.data() + j, fd, read_reqs[j + iter * MAX_EVENTS].buf,
+                                          read_reqs[j + iter * MAX_EVENTS].len,
+                                          read_reqs[j + iter * MAX_EVENTS].offset);
+      }
 
+                         // initialize `cbs` using `cb` array
+                         //
+
+                         for (uint64_t i = 0; i < n_ops; i++) {
+                           cbs[i] = cb.data() + i;
+      }
+
+                         uint64_t n_tries = 0;
+                         while (n_tries <= n_retries) {
+                           // issue reads
+        int64_t ret = io_submit(ctx, (int64_t) n_ops, cbs.data());
+        // if requests didn't get accepted
+        if (ret != (int64_t) n_ops) {
+                             std::cerr << "io_write_submit() failed; returned " << ret
+                                       << ", expected=" << n_ops << ", ernno=" << errno << "="
+                                       << ::strerror((int) -ret) << ", try #" << n_tries + 1;
+                             diskann::cout << "ctx: " << ctx << "\n";
+                             exit(-1);
+        } else {
+                             // wait on io_getevents
+          ret = io_getevents(ctx, (int64_t) n_ops, (int64_t) n_ops, evts.data(),
+                                                nullptr);
+          // if requests didn't complete
+          if (ret != (int64_t) n_ops) {
+                               std::cerr << "io_getevents() failed; returned " << ret
+                                         << ", expected=" << n_ops << ", ernno=" << errno << "="
+                                         << ::strerror((int) -ret) << ", try #" << n_tries + 1;
+                               exit(-1);
+          } else {
+                               break;
+          }
+        }
+      }
+    }
+  }
   void execute_io(io_context_t ctx, int fd, std::vector<AlignedRead> &read_reqs,
                   uint64_t n_retries = 0) {
 #ifdef DEBUG
@@ -198,7 +250,7 @@ void LinuxAlignedFileReader::read(std::vector<AlignedRead> &read_reqs,
 }
 
 void LinuxAlignedFileReader::sequential_write(AlignedRead &write_req,
-                                              IOContext &  ctx) {
+                                              IOContext   &ctx) {
   assert(this->file_desc != -1);
   // check inputs
   assert(IS_ALIGNED(write_req.offset, 4096));
@@ -208,7 +260,7 @@ void LinuxAlignedFileReader::sequential_write(AlignedRead &write_req,
   // create write request
   io_event_t  evt;
   struct iocb cb;
-  iocb_t *    cbs = &cb;
+  iocb_t     *cbs = &cb;
   io_prep_pwrite(&cb, this->file_desc, write_req.buf, write_req.len,
                  write_req.offset);
 
@@ -233,4 +285,10 @@ void LinuxAlignedFileReader::sequential_write(AlignedRead &write_req,
       exit(-1);
     }
   }
+}
+
+void LinuxAlignedFileReader::write(std::vector<AlignedRead> &write_reqs,
+                                   IOContext                &ctx) {
+  assert(this->file_desc != -1);
+  execute_write_io(ctx, this->file_desc, write_reqs);
 }

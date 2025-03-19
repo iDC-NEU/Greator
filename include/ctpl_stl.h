@@ -181,7 +181,7 @@ namespace ctpl {
     }
 
     template<typename F, typename... Rest>
-    auto push(F &&f, Rest &&... rest) -> std::future<decltype(f(0, rest...))> {
+    auto push(F &&f, Rest &&...rest) -> std::future<decltype(f(0, rest...))> {
       auto pck =
           std::make_shared<std::packaged_task<decltype(f(0, rest...))(int)>>(
               std::bind(std::forward<F>(f), std::placeholders::_1,
@@ -218,7 +218,7 @@ namespace ctpl {
       std::shared_ptr<std::atomic<bool>> flag(
           this->flags[i]);  // a copy of the shared ptr to the flag
       auto f = [this, i, flag /* a copy of the shared ptr to the flag */]() {
-        std::atomic<bool> &          _flag = *flag;
+        std::atomic<bool>           &_flag = *flag;
         std::function<void(int id)> *_f;
         bool                         isPop = this->q.pop(_f);
         while (true) {

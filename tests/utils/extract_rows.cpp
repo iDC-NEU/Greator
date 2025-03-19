@@ -32,7 +32,7 @@ void extract_rows(const std::string& input_file, _u64 nrows, _u64 ndims,
     for (int i = 0; i < nrows_to_extract * ndims; i++) {
       // since we won't allow replace_content if datatype != float, we can
       // assume that T is float always.
-      data[i] = (T)(rand() / RAND_MAX);
+      data[i] = (T) (rand() / RAND_MAX);
     }
     std::cout << nrows_to_extract * ndims << " values replaced. " << std::endl;
   } else {

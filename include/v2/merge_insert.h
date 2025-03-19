@@ -28,7 +28,7 @@
 
 #include "windows_customizations.h"
 
-#define MERGE_TH 30000000
+#define MERGE_TH 1000
 
 namespace diskann {
 
@@ -48,7 +48,7 @@ namespace diskann {
     DISKANN_DLLEXPORT int insert(const T* point, const TagT& tag);
 
     DISKANN_DLLEXPORT void lazy_delete(const TagT& tag);
-    //DISKANN_DLLEXPORT void lazy_delete(tsl::robin_set<TagT>& delete_list);
+    // DISKANN_DLLEXPORT void lazy_delete(tsl::robin_set<TagT>& delete_list);
 
     // search function - search both short_term_index and long_term_index and
     // return with top L candidate tags of the shard
@@ -61,21 +61,23 @@ namespace diskann {
     // its threshold - triggers index switch and merge
     DISKANN_DLLEXPORT int trigger_merge();
 
-    DISKANN_DLLEXPORT void final_merge();
+    DISKANN_DLLEXPORT void final_merge(uint32_t id_map = 0);
 
     DISKANN_DLLEXPORT std::string ret_merge_prefix();
+    std::string                   _disk_index_prefix_out;
 
    protected:
     // call constructor to StreamingMerger object
-    void construct_index_merger();
+    void construct_index_merger(uint32_t id_map = 0);
 
     // call StreamingMerger destructor to explicitly de-register threads
     void destruct_index_merger();
 
     //_active_index flag will be modified only inside this function
-    void switch_index();  // function to atomically switch btw indices, makes
-                          // older index inactive(read-only), saves it, makes new
-                          // index active (r/w)
+    void switch_index(
+        uint32_t id_map = 0);  // function to atomically switch btw indices,
+                               // makes older index inactive(read-only), saves
+                               // it, makes new index active (r/w)
 
     // save currently active mem_index and make it inactive
     int save();
@@ -85,7 +87,10 @@ namespace diskann {
 
     // call merge on a StreamingMerger object, only if index switching and
     // saving is successful
-    void merge();
+    void                   merge(uint32_t id_map = 0);
+    PQFlashIndex<T, TagT>* get_disk_index() {
+      return _disk_index;
+    }
 
    private:
     size_t   _merge_th = 0;
@@ -101,12 +106,12 @@ namespace diskann {
     std::shared_ptr<Index<T, TagT>>    _mem_index_0 = nullptr;
     std::shared_ptr<Index<T, TagT>>    _mem_index_1 = nullptr;
     std::shared_ptr<AlignedFileReader> reader = nullptr;
-    PQFlashIndex<T, TagT>* _disk_index = nullptr;
-   StreamingMerger<T, TagT> *  _merger = nullptr;
-   std::string TMP_FOLDER;
+    PQFlashIndex<T, TagT>*             _disk_index = nullptr;
+    StreamingMerger<T, TagT>*          _merger = nullptr;
+    std::string                        TMP_FOLDER;
 
-   diskann::Metric _dist_metric;
-    Distance<T>* _dist_comp;
+    diskann::Metric _dist_metric;
+    Distance<T>*    _dist_comp;
 
     diskann::Parameters _paras_mem;
     diskann::Parameters _paras_disk;
@@ -150,7 +155,7 @@ namespace diskann {
 
     std::string _mem_index_prefix;
     std::string _disk_index_prefix_in;
-    std::string _disk_index_prefix_out;
+
     std::string _deleted_tags_file;
   };
 };  // namespace diskann

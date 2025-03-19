@@ -14,6 +14,7 @@
 #include <limits>
 #include <omp.h>
 #include <future>
+#include <cmath>
 
 #include "tcmalloc/malloc_extension.h"
 #include <unistd.h>
@@ -21,23 +22,54 @@
 #include "logger.h"
 #include "ann_exception.h"
 
-#define SECTORS_PER_MERGE (uint64_t) 65536
+// #define SECTORS_PER_MERGE (uint64_t) 65536
+#define SECTORS_PER_MERGE (uint64_t) 1
+
+// no need to prune when delete <PRUNE_TH
+#define PRUNE_TH 2
+#define Modes_consolidate 3
+
+// max memory for disk nodes
+#define pages_per_read (65536)      // index_file pages per read
+#define topopages_per_read (65536)  // topo_file pages per read
+
 // max number of points per mem index being merged -- 32M
-#define MAX_PTS_PER_MEM_INDEX (uint64_t)(1 << 25)
-#define INDEX_OFFSET (uint64_t)(MAX_PTS_PER_MEM_INDEX * 4)
+#define MAX_PTS_PER_MEM_INDEX (uint64_t) (1 << 25)
+#define INDEX_OFFSET (uint64_t) (MAX_PTS_PER_MEM_INDEX * 4)
 #define MAX_INSERT_THREADS (uint64_t) 10
 #define MAX_N_THREADS (uint64_t) 10
 #define NUM_INDEX_LOAD_THREADS (uint64_t) 10
-#define PER_THREAD_BUF_SIZE (uint64_t)(65536 * 64 * 4)
-
+// #define MAX_INSERT_THREADS (uint64_t) 1
+// #define MAX_N_THREADS (uint64_t) 1
+// #define NUM_INDEX_LOAD_THREADS (uint64_t) 1
+#define PER_THREAD_BUF_SIZE (uint64_t) (65536 * 64 * 4)  // 65536 * 4 * 64
+#define prune_R(r) (r - 2)
 #define PQ_FLASH_INDEX_MAX_NODES_TO_CACHE 200000
 
+using offset_t = uint64_t;
+
 namespace diskann {
+  float calculate_similarity(std::vector<_u32> a, std::vector<_u32> b) {
+    int sum = 0;
+    for (auto &inda : a) {
+      for (auto &indb : b) {
+        if (indb == inda) {
+          sum++;
+          break;
+        }
+      }
+    }
+    return sum * 1.0 / a.size();
+  }
+  bool compare_element_for_prune(Element_for_prune a, Element_for_prune b) {
+    return a.value < b.value;
+  }
   template<typename T, typename TagT>
   StreamingMerger<T, TagT>::StreamingMerger(
-      const uint32_t ndims, Distance<T> *dist, diskann::Metric dist_metric, const uint32_t beam_width,
-      const uint32_t range, const uint32_t l_index, const float alpha,
-      const uint32_t maxc, bool single_file_index) {
+      const uint32_t ndims, Distance<T> *dist, diskann::Metric dist_metric,
+      const uint32_t beam_width, const uint32_t range, const uint32_t l_index,
+      const float alpha, const uint32_t maxc, bool single_file_index,
+      uint32_t id_map) {
     // book keeping
     this->ndims = ndims;
     this->aligned_ndims = (_u32) ROUND_UP(this->ndims, 8);
@@ -49,6 +81,7 @@ namespace diskann {
     this->dist_metric = dist_metric;
     this->dist_cmp = dist;
     this->_single_file_index = single_file_index;
+    this->id_map = id_map;
 
     std::cout << "StreamingMerger created with R=" << this->range
               << " L=" << this->l_index << " BW=" << this->beam_width
@@ -58,10 +91,6 @@ namespace diskann {
 
   template<typename T, typename TagT>
   StreamingMerger<T, TagT>::~StreamingMerger() {
-    // release scratch alloc memory
-    // delete this->fp_alloc;
-    // delete this->pq_alloc;
-
     if (this->disk_index != nullptr)
       delete this->disk_index;
 
@@ -70,10 +99,12 @@ namespace diskann {
     for (auto &delta : this->mem_deltas) {
       delete delta;
     }
+
     aligned_free((void *) this->thread_pq_scratch);
+
     for (auto &data : this->mem_data) {
-      //delete[] data;
-      aligned_free((void *)data);
+      // delete[] data;
+      aligned_free((void *) data);
     }
   }
 
@@ -87,9 +118,9 @@ namespace diskann {
       diskann::cout << "Processing pq of inserts from mem-DiskANN #" << i + 1
                     << "\n";
       const tsl::robin_set<uint32_t> &deleted_set = this->mem_deleted_ids[i];
-      const T* coords = this->mem_data[i];
-      const uint32_t offset = this->offset_ids[i];
-      const uint32_t count = this->mem_npts[i];
+      const T                        *coords = this->mem_data[i];
+      const uint32_t                  offset = this->offset_ids[i];
+      const uint32_t                  count = this->mem_npts[i];
 // TODO (perf) :: trivially parallelizes ??
 #pragma omp parallel for schedule(dynamic, 1) num_threads(MAX_N_THREADS)
       // iteratively insert each point into full index
@@ -101,7 +132,7 @@ namespace diskann {
 
         // data for jth point
         const T *j_coords =
-            coords + ((uint64_t)(this->aligned_ndims) * (uint64_t) j);
+            coords + ((uint64_t) (this->aligned_ndims) * (uint64_t) j);
         const uint32_t j_id = offset + (uint32_t) j;
 
         // get renamed ID
@@ -124,9 +155,9 @@ namespace diskann {
     diskann::cout << "Finished deflating all points\n";
     double   e2e_time = ((double) total_insert_timer.elapsed()) / (1000000.0);
     double   insert_time = std::accumulate(this->insert_times.begin(),
-                                         this->insert_times.end(), 0.0);
+                                           this->insert_times.end(), 0.0);
     double   delta_time = std::accumulate(this->delta_times.begin(),
-                                        this->delta_times.end(), 0.0);
+                                          this->delta_times.end(), 0.0);
     uint32_t n_inserts =
         std::accumulate(this->mem_npts.begin(), this->mem_npts.end(), 0);
     diskann::cout << "TIMER:: PQ time per point = " << insert_time / n_inserts
@@ -143,17 +174,21 @@ namespace diskann {
     for (uint32_t i = 0; i < this->mem_data.size(); i++) {
       diskann::cout << "Processing inserts from mem-DiskANN #" << i + 1 << "\n";
       const tsl::robin_set<uint32_t> &deleted_set = this->mem_deleted_ids[i];
-      const T* coords = this->mem_data[i];
-      const uint32_t offset = this->offset_ids[i];
-      const uint32_t count = this->mem_npts[i];
+      const T                        *coords = this->mem_data[i];
+      const uint32_t                  offset = this->offset_ids[i];
+      const uint32_t                  count = this->mem_npts[i];
 
       size_t cur_cache_size = 0;
 #ifdef USE_TCMALLOC
+      std::cout << "USING "
+                   "TCMALLOC!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+                   "!!!!!!!!!"
+                << std::endl;
       MallocExtension::instance()->GetNumericProperty(
           "tcmalloc.max_total_thread_cache_bytes", &cur_cache_size);
-      //diskann::cout << "Current cache size : " << (cur_cache_size >> 10)
-      //              << " KiB\n"
-      //              << std::endl;
+      // diskann::cout << "Current cache size : " << (cur_cache_size >> 10)
+      //               << " KiB\n"
+      //               << std::endl;
       MallocExtension::instance()->SetNumericProperty(
           "tcmalloc.max_total_thread_cache_bytes", 128 * 1024 * 1024);
 
@@ -180,14 +215,15 @@ namespace diskann {
           //           << " Until Delta time: " << delta_time / 1000000 << "s"
           //           << std::endl;
           // for (int t = 0; t < MAX_INSERT_THREADS; t++) {
-          //     std::cout << t << ": Insert time " <<  this->insert_times[t]/ 1000000 << "s"
+          //     std::cout << t << ": Insert time " <<  this->insert_times[t]/
+          //     1000000 << "s"
           //     << "Delta time: " << this->delta_times[t] / 1000000 << "s"
           //     << std::endl;
           // }
         }
         // data for jth point
         const T *j_coords =
-            coords + ((uint64_t)(this->aligned_ndims) * (uint64_t) j);
+            coords + ((uint64_t) (this->aligned_ndims) * (uint64_t) j);
         const uint32_t j_id = offset + (uint32_t) j;
 
         // insert into index
@@ -198,9 +234,9 @@ namespace diskann {
     diskann::cout << "Finished inserting all points\n";
     double   e2e_time = ((double) total_insert_timer.elapsed()) / (1000000.0);
     double   insert_time = std::accumulate(this->insert_times.begin(),
-                                         this->insert_times.end(), 0.0);
+                                           this->insert_times.end(), 0.0);
     double   delta_time = std::accumulate(this->delta_times.begin(),
-                                        this->delta_times.end(), 0.0);
+                                          this->delta_times.end(), 0.0);
     uint32_t n_inserts =
         std::accumulate(this->mem_npts.begin(), this->mem_npts.end(), 0);
     diskann::cout << "TIMER:: Insert time per point = "
@@ -210,7 +246,7 @@ namespace diskann {
   }
 
   template<typename T, typename TagT>
-  void StreamingMerger<T, TagT>::insert_mem_vec(const T *      mem_vec,
+  void StreamingMerger<T, TagT>::insert_mem_vec(const T       *mem_vec,
                                                 const uint32_t offset_id) {
     Timer timer;
     float insert_time, delta_time;
@@ -218,10 +254,10 @@ namespace diskann {
     std::vector<Neighbor>         pool;
     std::vector<Neighbor>         tmp;
     tsl::robin_map<uint32_t, T *> coord_map;
-
     // std::cout << "TID: " << omp_get_thread_num()
     //          << " Before offset_iterate_to_Fixed_point()" << std::endl;
     // search on combined graph
+
     this->offset_iterate_to_fixed_point(mem_vec, this->l_index, pool,
                                         coord_map);
     insert_time = (float) timer.elapsed();
@@ -233,14 +269,14 @@ namespace diskann {
     prune_neighbors(coord_map, pool, new_nhood);
 
     if (new_nhood.size() > range) {
-      std::cout << "***ERROR*** After prune, for offset_id: " << offset_id << " found "
-                << new_nhood.size() << " neighbors instead of range: " << range
-                << std::endl;
-    
+      std::cout << "***ERROR*** After prune, for offset_id: " << offset_id
+                << " found " << new_nhood.size()
+                << " neighbors instead of range: " << range << std::endl;
     }
 
-    //this->disk_delta->insert_vector(offset_id, new_nhood.data(),
-    //                                (_u32) new_nhood.size());
+    // this->disk_delta->insert_vector(offset_id, new_nhood.data(),
+    //                                 (_u32) new_nhood.size());
+
     this->disk_delta->inter_insert(offset_id, new_nhood.data(),
                                    (_u32) new_nhood.size());
 
@@ -248,7 +284,8 @@ namespace diskann {
     for (auto &delta : this->mem_deltas) {
       delta->insert_vector(offset_id, new_nhood.data(),
                            (_u32) new_nhood.size());
-      //delta->inter_insert(offset_id, new_nhood.data(), (_u32) new_nhood.size());
+      // delta->inter_insert(offset_id, new_nhood.data(), (_u32)
+      // new_nhood.size());
     }
     delta_time = (float) timer.elapsed();
     // std::cout << "TID: " << omp_get_thread_num()
@@ -264,7 +301,7 @@ namespace diskann {
   template<typename T, typename TagT>
   void StreamingMerger<T, TagT>::offset_iterate_to_fixed_point(
       const T *vec, const uint32_t Lsize,
-      std::vector<Neighbor> &        expanded_nodes_info,
+      std::vector<Neighbor>         &expanded_nodes_info,
       tsl::robin_map<uint32_t, T *> &coord_map) {
     std::vector<Neighbor> exp_node_info;
     exp_node_info.reserve(2 * Lsize);
@@ -273,11 +310,12 @@ namespace diskann {
     // NOTE :: handling deletes for disk-index inside this call
     // this->disk_iterate_to_fixed_point(vec, this->l_index, exp_node_info,
     // exp_node_id, best_l_nodes, cmap);
-    uint32_t       omp_thread_no = omp_get_thread_num();
+    uint32_t omp_thread_no = omp_get_thread_num();
     if (this->disk_thread_data.size() <= omp_thread_no) {
       throw ANNException(std::string("Found ") + std::to_string(omp_thread_no) +
                              " thread when only " +
-                             std::to_string(this->disk_thread_data.size()) + " were expected",
+                             std::to_string(this->disk_thread_data.size()) +
+                             " were expected",
                          -1);
     }
     ThreadData<T> &thread_data = this->disk_thread_data[omp_thread_no];
@@ -346,19 +384,20 @@ namespace diskann {
     std::sort(pool.begin(), pool.end());
 
     std::vector<Neighbor> result;
-    result.reserve(this->range);
+    result.reserve(prune_R(this->range));
     std::vector<float> occlude_factor(pool.size(), 0);
 
     occlude_list_pq(pool, result, occlude_factor, scratch);
 
     pruned_list.clear();
-    assert(result.size() <= range);
+    assert(result.size() <= prune_R(range));
     for (auto iter : result) {
       pruned_list.emplace_back(iter.id);
     }
 
     if (alpha > 1) {
-      for (uint32_t i = 0; i < pool.size() && pruned_list.size() < range; i++) {
+      for (uint32_t i = 0;
+           i < pool.size() && pruned_list.size() < prune_R(range); i++) {
         if (std::find(pruned_list.begin(), pruned_list.end(), pool[i].id) ==
             pruned_list.end())
           pruned_list.emplace_back(pool[i].id);
@@ -368,7 +407,7 @@ namespace diskann {
 
   template<typename T, typename TagT>
   void StreamingMerger<T, TagT>::occlude_list(
-      std::vector<Neighbor> &              pool,
+      std::vector<Neighbor>               &pool,
       const tsl::robin_map<uint32_t, T *> &coord_map,
       std::vector<Neighbor> &result, std::vector<float> &occlude_factor) {
     if (pool.empty())
@@ -419,9 +458,10 @@ namespace diskann {
     assert(!pool.empty());
 
     float cur_alpha = 1;
-    while (cur_alpha <= alpha && result.size() < range) {
+    while (cur_alpha <= alpha && result.size() < prune_R(range)) {
       uint32_t start = 0;
-      while (result.size() < range && (start) < pool.size() && start < maxc) {
+      while (result.size() < prune_R(range) && (start) < pool.size() &&
+             start < maxc) {
         auto &p = pool[start];
         if (occlude_factor[start] > cur_alpha) {
           start++;
@@ -447,9 +487,9 @@ namespace diskann {
 
   template<typename T, typename TagT>
   void StreamingMerger<T, TagT>::dump_to_disk(const uint32_t start_id,
-                                              const char *   buf,
+                                              const char    *buf,
                                               const uint32_t n_sectors,
-                                              std::ofstream & output_writer) {
+                                              std::ofstream &output_writer) {
     assert(start_id % this->nnodes_per_sector == 0);
     uint32_t start_sector = (start_id / this->nnodes_per_sector) + 1;
     uint64_t start_off = start_sector * (uint64_t) SECTOR_LEN;
@@ -475,8 +515,11 @@ namespace diskann {
   template<typename T, typename TagT>
   void StreamingMerger<T, TagT>::compute_deleted_ids() {
     // process disk deleted tags
+    // std::cout<<"compute_deleted_ids start"<<std::endl;
     for (uint32_t i = 0; i < this->disk_npts; i++) {
       TagT i_tag = this->disk_tags[i];
+      // std::cout << "disk_tags[" << i << "]" << " = " << disk_tags[i]
+      //           << std::endl;
       if (this->deleted_tags.find(i_tag) != this->deleted_tags.end()) {
         this->disk_deleted_ids.insert(i);
       }
@@ -484,16 +527,16 @@ namespace diskann {
     diskann::cout << "Found " << this->disk_deleted_ids.size()
                   << " tags to delete from SSD-DiskANN\n";
 
-//    this->mem_deleted_ids.resize(this->mem_data.size());
+    //    this->mem_deleted_ids.resize(this->mem_data.size());
     for (uint32_t i = 0; i < this->mem_data.size(); i++) {
       tsl::robin_set<uint32_t> &deleted_ids = this->mem_deleted_ids[i];
       for (uint32_t id = 0; id < this->mem_npts[i]; id++) {
-          if(deleted_ids.find(id) != deleted_ids.end())
-              continue;
+        if (deleted_ids.find(id) != deleted_ids.end())
+          continue;
         const TagT tag = this->mem_tags[i][id];
-        //if (this->deleted_tags.find(tag) != this->deleted_tags.end()) {
-        //  deleted_ids.insert(id);
-        //}
+        // if (this->deleted_tags.find(tag) != this->deleted_tags.end()) {
+        //   deleted_ids.insert(id);
+        // }
         if (this->latter_deleted_tags[i].find(tag) !=
             this->latter_deleted_tags[i].end()) {
           deleted_ids.insert(id);
@@ -506,73 +549,143 @@ namespace diskann {
 
   template<typename T, typename TagT>
   void StreamingMerger<T, TagT>::process_deletes() {
-    // buf to hold data being read
-    char *buf = nullptr;
-    alloc_aligned((void **) &buf, SECTORS_PER_MERGE * SECTOR_LEN, SECTOR_LEN);
+    // one thread and >1 pages
+    Timer delete_timer;
+    tbb::concurrent_unordered_map<uint32_t, tbb::concurrent_vector<uint32_t>>
+        sector_with_deleted_nbrs_nodes;
 
-    // open output file for writing
-    // Was: this->disk_index_out_path + "_disk.index";
-    
-    diskann::cout << "Writing delete consolidated graph to "
-                  << this->temp_disk_index_path << std::endl;
-    std::ofstream output_writer(this->temp_disk_index_path, 
-                                std::ios::out | std::ios::binary);
-    assert(output_writer.is_open());
-    // skip writing header for now
-    //    this->output_writer.seekp(SECTOR_LEN, std::ios::beg);
+    std::string indir = this->disk_index_in_path + "_disk.index_with_only_nbrs";
+
+    get_sector_with_deleted_nbrs_nodes(indir, sector_with_deleted_nbrs_nodes);
+    std::cout << "sector_with_deleted_nbrs_nodes size: "
+              << sector_with_deleted_nbrs_nodes.size() << "\n";
+    std::cout << "From " << indir << " get sector_with_deleted_nbrs_nodes.\n ";
+    Timer build_help_timer;
+
+    std::cout << "Deleted_Nodes already insert into "
+                 "sector_with_deleted_nbrs_nodes\n";
+    std::cout << "sector_with_deleted_nbrs_nodes size: "
+              << sector_with_deleted_nbrs_nodes.size() << "\n";
+
+    // map->vec
+    std::vector<uint32_t> page_id_vec;
+    for (auto &pair : sector_with_deleted_nbrs_nodes) {
+      page_id_vec.push_back(pair.first);
+    }
+    // std::sort(page_id_vec.begin(), page_id_vec.end());
+    // calculate read-times
+    size_t read_nums =
+        (sector_with_deleted_nbrs_nodes.size() - 1 + pages_per_read) /
+        pages_per_read;
+    // pages_per_read
+    // int pagenum_per_read = (MMem * 1024 * 1024) / SECTOR_LEN;
+    std::cout << "read_nums_delete: " << read_nums
+              << ", pagenum_per_read: " << pages_per_read << std::endl;
+
+    std::vector<std::vector<uint32_t>> sector_per_read(read_nums,
+                                                       std::vector<uint32_t>());
+
+    for (size_t i = 0; i < read_nums; i++) {
+      int now_pages = 0;
+      while (now_pages < pages_per_read &&
+             (i * pages_per_read + now_pages) <
+                 sector_with_deleted_nbrs_nodes.size()) {
+        sector_per_read[i].push_back(
+            page_id_vec[i * pages_per_read + now_pages]);
+        now_pages++;
+      }
+    }
+
     std::unique_ptr<char[]> sector_buf = std::make_unique<char[]>(SECTOR_LEN);
+    std::fstream            output_writer(this->temp_disk_index_path,
+                                          std::ios::binary | std::ios::out | std::ios::in);
+
+    output_writer.seekp(0, std::ios::beg);
     output_writer.write(sector_buf.get(), SECTOR_LEN);
 
-    Timer delete_timer;
     // batch consolidate deletes
-    std::vector<DiskNode<T>>                                disk_nodes;
-    std::vector<std::pair<uint32_t, std::vector<uint32_t>>> id_nhoods;
-    uint32_t start_id = 0, new_start_id;
     diskann::cout << "Consolidating deletes\n";
 
-    while (start_id < this->disk_npts) {
-      new_start_id = this->disk_index->merge_read(disk_nodes, start_id,
-                                                  SECTORS_PER_MERGE, buf);
-#pragma omp parallel for schedule(dynamic, 128) num_threads(MAX_N_THREADS)
-      for (int64_t i = 0; i < (int64_t) disk_nodes.size(); i++) {
-        // get thread-specific scratch
-        int      omp_thread_no = omp_get_thread_num();
-        uint8_t *pq_coord_scratch = this->thread_bufs[omp_thread_no];
-        assert(pq_coord_scratch != nullptr);
-        DiskNode<T> &disk_node = disk_nodes[i];
-        this->consolidate_deletes(disk_node, pq_coord_scratch);
+    char *buf = nullptr;
+    alloc_aligned((void **) &buf, (size_t) pages_per_read * SECTOR_LEN,
+                  SECTOR_LEN);
+
+    double build_help_time = (double) build_help_timer.elapsed() / 1000000.0;
+    double io_time = 0;
+
+    for (size_t j = 0; j < read_nums; ++j) {
+      std::vector<uint32_t> &sector_ids = sector_per_read[j];
+      std::vector<uint32_t>  start_ids(sector_ids.size());
+      int chunk_size = 1 > (sector_ids.size() / (MAX_N_THREADS))
+                           ? 1
+                           : (sector_ids.size() / (MAX_N_THREADS));
+#pragma omp parallel for schedule(dynamic, chunk_size) \
+    num_threads(MAX_N_THREADS)
+      for (size_t i = 0; i < sector_ids.size(); i++) {
+        start_ids[i] = (sector_ids[i] - 1) * this->nnodes_per_sector;
       }
-      for (auto &disk_node : disk_nodes) {
-        if (this->is_deleted(disk_node)) {
-          this->free_ids.push_back(disk_node.id);
+
+      std::vector<std::vector<DiskNode<T>>> disk_nodess;
+
+      Timer io_r;
+      this->disk_index->merge_read_through_diff_pages(
+          disk_nodess, disk_tags, disk_deleted_ids, start_ids, buf);
+      io_time += (double) io_r.elapsed() / 1000000.0;
+
+      assert(disk_nodess.size() == sector_ids.size());
+
+#pragma omp parallel for schedule(dynamic, 1) num_threads(MAX_N_THREADS)
+      for (size_t k = 0; k < sector_ids.size(); k++) {
+        std::vector<DiskNode<T>>         &disk_nodes = disk_nodess[k];
+        _u32                              sector_id = sector_ids[k];
+        tbb::concurrent_vector<uint32_t> &vec =
+            sector_with_deleted_nbrs_nodes[sector_id];
+
+        int      omp_thread_no = omp_get_thread_num();
+        uint8_t *pq_coord_scratch =
+            reinterpret_cast<uint8_t *>(this->thread_bufs[omp_thread_no]);
+        assert(pq_coord_scratch != nullptr);
+
+        for (_u32 i = 0; i < vec.size(); i++) {
+          _u32 offset_node_id = vec[i] - start_ids[k];
+
+          assert(offset_node_id < disk_nodes.size());
+          DiskNode<T> &disk_node = disk_nodes[offset_node_id];
+          this->consolidate_deletes(disk_node, pq_coord_scratch);
+
+          if (!this->is_deleted(disk_node)) {
+            this->delete_nodes.emplace_back(disk_node.id, disk_node.nnbrs,
+                                            disk_node.nbrs);
+
+          } else {
+            this->delete_nodes.emplace_back(disk_node.id, 0);
+            this->free_ids.push_back(disk_node.id);
+          }
         }
       }
 
-      uint64_t prev_pos = output_writer.tellp();
-      this->dump_to_disk(start_id, buf, SECTORS_PER_MERGE, output_writer);
-      output_writer.flush();
-      uint64_t cur_pos = output_writer.tellp();
-      if (!(cur_pos - prev_pos == (SECTORS_PER_MERGE * SECTOR_LEN)))
-        diskann::cout << "ERROR! During dumping to disk" << std::endl;
+      Timer io_w;
+      this->disk_index->merge_write_through_diff_pages(start_ids, buf);
+      io_time += (double) io_w.elapsed() / 1000000.0;
 
-      // advance to next block
-      disk_nodes.clear();
-      id_nhoods.clear();
-      diskann::cout << new_start_id << " / " << this->disk_npts
-                    << " nodes processed.\n";
-      start_id = new_start_id;
-
+      double e2e_time = ((double) delete_timer.elapsed()) / (1000000.0);
+      diskann::cout << "Processed Deletes in " << e2e_time << " s."
+                    << std::endl;
+      std::cout << "build_help_time_delete: " << build_help_time
+                << " , io_time: " << io_time << std::endl;
+      diskann::cout << "Writing header.\n";
+      if (this->id_map) {
+        process_topological_delete();
+        delete_nodes.clear();
+      }
+      aligned_free((void *) buf);
     }
-    double e2e_time = ((double) delete_timer.elapsed()) / (1000000.0);
-    diskann::cout << "Processed Deletes in " << e2e_time << " s." << std::endl;
-    diskann::cout << "Writing header.\n";
 
     // write header
-    output_writer.seekp(0, std::ios::beg);
     // HEADER --> [_u32 #metadata items][_u32 1][_u64 nnodes][_u64 ndims][_u64
     // medoid ID]
-    // [_u64 max_node_len][_u64 nnodes_per_sector][_u64 #frozen points in vamana
-    // index][_u64 frozen point location][_u64 file size]
+    // [_u64 max_node_len][_u64 nnodes_per_sector][_u64 #frozen points in
+    // vamana index][_u64 frozen point location][_u64 file size]
     uint64_t file_size =
         SECTOR_LEN + (ROUND_UP(ROUND_UP(this->disk_npts, nnodes_per_sector) /
                                    nnodes_per_sector,
@@ -601,16 +714,14 @@ namespace diskann {
     output_metadata.push_back(this->disk_index_frozen_loc);
     output_metadata.push_back(file_size);
 
-    // close index
-    output_writer.close();
     diskann::save_bin<_u64>(this->temp_disk_index_path, output_metadata.data(),
                             output_metadata.size(), 1, 0);
-    // free buf
-    aligned_free((void *) buf);
-
     // free backing buf for deletes
     aligned_free((void *) this->delete_backing_buf);
-  }
+    this->prune_nums = 0;
+    this->not_prune_nums = 0;
+
+  }  // namespace diskann
 
   template<typename T, typename TagT>
   void StreamingMerger<T, TagT>::populate_deleted_nhoods() {
@@ -627,10 +738,17 @@ namespace diskann {
                   << "KiB aligned buffer for deletes.\n";
     alloc_aligned((void **) &this->delete_backing_buf, backing_buf_size, 256);
     memset(this->delete_backing_buf, 0, backing_buf_size);
+
+    Timer scan_time;
+
     this->disk_index->scan_deleted_nodes(this->disk_deleted_ids, deleted_nodes,
                                          buf, this->delete_backing_buf,
-                                         SECTORS_PER_MERGE);
+                                         SECTORS_PER_MERGE, this->id_map);
+    double e2e_time = ((double) scan_time.elapsed()) / (1000000.0);
 
+    std::cout << "scan_deleted_nodes time: " << e2e_time << " s.";
+
+    std::cout << std::endl;
     // insert into deleted_nhoods
     this->disk_deleted_nhoods.clear();
     this->disk_deleted_nhoods.reserve(deleted_nodes.size());
@@ -656,38 +774,44 @@ namespace diskann {
   }
 
   template<typename T, typename TagT>
-  void StreamingMerger<T, TagT>::consolidate_deletes(DiskNode<T> &disk_node,
-                                                     uint8_t *    scratch) {
+  uint32_t StreamingMerger<T, TagT>::consolidate_deletes(DiskNode<T> &disk_node,
+                                                         uint8_t     *scratch) {
     // if node is deleted
     if (this->is_deleted(disk_node)) {
       disk_node.nnbrs = 0;
       *(disk_node.nbrs - 1) = 0;
-      return;
+      return 1;
     }
 
     const uint32_t id = disk_node.id;
 
     assert(disk_node.nnbrs < 512);
-
+    // std::cout << disk_node.nnbrs << " \n";
 
     std::vector<uint32_t> id_nhood(disk_node.nbrs,
                                    disk_node.nbrs + disk_node.nnbrs);
 
-    tsl::robin_set<uint32_t> new_edges;
+    int                   deleted_nbrs_per_node = 0;
+    std::vector<uint32_t> id_nhood_old(disk_node.nbrs,
+                                       disk_node.nbrs + disk_node.nnbrs);
 
-    bool change = false;
+    tsl::robin_set<uint32_t> new_edges;
+    std::vector<uint32_t>    deleted_nbrs;
+    bool                     change = false;
     for (auto &nbr : id_nhood) {
       auto iter = this->disk_deleted_nhoods.find(nbr);
       if (iter != this->disk_deleted_nhoods.end()) {
         change = true;
         new_edges.insert(iter->second.begin(), iter->second.end());
+        deleted_nbrs.push_back(iter->first);
+        deleted_nbrs_per_node++;
       } else {
         new_edges.insert(nbr);
       }
     }
     // no refs to deleted nodes --> move to next node
     if (!change) {
-      return;
+      return 0;
     }
 
     // refs to deleted nodes
@@ -703,47 +827,117 @@ namespace diskann {
       }
     }
 
-    // TODO (corner case) :: id_nhood might be empty in adversarial cases
-    // if (id_nhood.empty()) {
-    //   diskann::cout << "Adversarial case -- all neighbors of node's neighbors "
-    //                    "deleted -- ID : "
-    //                 << id << "; exiting\n";
-    //   exit(-1);
-    // }
+    if (deleted_nbrs_per_node >= PRUNE_TH) {
+      __sync_fetch_and_add(&this->prune_nums, 1);
+      // compute PQ dists and shrink
+      std::vector<float> id_nhood_dists(id_nhood.size(), 0.0f);
+      assert(scratch != nullptr);
+      this->disk_index->compute_pq_dists(id, id_nhood.data(),
+                                         id_nhood_dists.data(),
+                                         (_u32) id_nhood.size(), scratch);
 
-    // compute PQ dists and shrink
-    std::vector<float> id_nhood_dists(id_nhood.size(), 0.0f);
-    assert(scratch != nullptr);
-    this->disk_index->compute_pq_dists(id, id_nhood.data(),
-                                       id_nhood_dists.data(),
-                                       (_u32) id_nhood.size(), scratch);
+      // prune neighbor list using PQ distances
+      std::vector<Neighbor> cand_nbrs(id_nhood.size());
+      for (uint32_t i = 0; i < id_nhood.size(); i++) {
+        cand_nbrs[i].id = id_nhood[i];
+        //      auto iter = this->disk_deleted_ids.find(id_nhood[i]);
+        //      assert(iter == this->disk_deleted_ids.end());
+        cand_nbrs[i].distance = id_nhood_dists[i];
+      }
+      // sort and keep only maxc neighbors
+      std::sort(cand_nbrs.begin(), cand_nbrs.end());
+      if (cand_nbrs.size() > this->maxc) {
+        cand_nbrs.resize(this->maxc);
+      }
+      std::vector<Neighbor> pruned_nbrs;
+      std::vector<float>    occlude_factor(cand_nbrs.size(), 0.0f);
+      pruned_nbrs.reserve(prune_R(this->range));
+      this->occlude_list_pq(cand_nbrs, pruned_nbrs, occlude_factor, scratch);
 
-    // prune neighbor list using PQ distances
-    std::vector<Neighbor> cand_nbrs(id_nhood.size());
-    for (uint32_t i = 0; i < id_nhood.size(); i++) {
-      cand_nbrs[i].id = id_nhood[i];
-      //      auto iter = this->disk_deleted_ids.find(id_nhood[i]);
-      //      assert(iter == this->disk_deleted_ids.end());
-      cand_nbrs[i].distance = id_nhood_dists[i];
-    }
-    // sort and keep only maxc neighbors
-    std::sort(cand_nbrs.begin(), cand_nbrs.end());
-    if (cand_nbrs.size() > this->maxc) {
-      cand_nbrs.resize(this->maxc);
-    }
-    std::vector<Neighbor> pruned_nbrs;
-    std::vector<float>    occlude_factor(cand_nbrs.size(), 0.0f);
-    pruned_nbrs.reserve(this->range);
-    this->occlude_list_pq(cand_nbrs, pruned_nbrs, occlude_factor, scratch);
+      // copy back final nbrs
+      disk_node.nnbrs = (_u32) pruned_nbrs.size();
+      *(disk_node.nbrs - 1) = disk_node.nnbrs;
+      for (uint32_t i = 0; i < (_u32) pruned_nbrs.size(); i++) {
+        disk_node.nbrs[i] = pruned_nbrs[i].id;
+        //     auto iter = this->disk_deleted_ids.find(disk_node.nbrs[i]);
+        //      assert(iter == this->disk_deleted_ids.end());
+      }
+    } else {
+      assert(scratch != nullptr);
+      __sync_fetch_and_add(&this->not_prune_nums, 1);
 
-    // copy back final nbrs
-    disk_node.nnbrs = (_u32) pruned_nbrs.size();
-    *(disk_node.nbrs - 1) = disk_node.nnbrs;
-    for (uint32_t i = 0; i < (_u32) pruned_nbrs.size(); i++) {
-      disk_node.nbrs[i] = pruned_nbrs[i].id;
-      //     auto iter = this->disk_deleted_ids.find(disk_node.nbrs[i]);
-      //      assert(iter == this->disk_deleted_ids.end());
+      std::vector<uint32_t> with_deleted_nodes_nbrs;
+      std::vector<uint32_t> in_nodes_old_nbrs;
+
+      for (auto &nbr : id_nhood) {
+        auto it = std::find(id_nhood_old.begin(), id_nhood_old.end(), nbr);
+        if (it != id_nhood_old.end()) {
+          auto it_old = std::find(in_nodes_old_nbrs.begin(),
+                                  in_nodes_old_nbrs.end(), nbr);
+          if (it_old == in_nodes_old_nbrs.end())
+            in_nodes_old_nbrs.push_back(nbr);
+        } else {
+          auto it_new = std::find(with_deleted_nodes_nbrs.begin(),
+                                  with_deleted_nodes_nbrs.end(), nbr);
+          if (it_new == with_deleted_nodes_nbrs.end())
+            with_deleted_nodes_nbrs.push_back(nbr);
+        }
+      }
+
+      uint32_t final_size = in_nodes_old_nbrs.size() + deleted_nbrs_per_node;
+      uint32_t dk = std::ceil((1.0 * (this->range - in_nodes_old_nbrs.size())) /
+                              id_nhood_old.size());
+      // copy back final nbrs
+      std::vector<uint32_t> final_nbrs;
+      for (uint32_t i = 0; i < (_u32) in_nodes_old_nbrs.size(); i++) {
+        final_nbrs.push_back(in_nodes_old_nbrs[i]);
+      }
+      for (uint32_t i = in_nodes_old_nbrs.size(); i < (_u32) final_size; i++) {
+        uint32_t did = deleted_nbrs[i - in_nodes_old_nbrs.size()];
+        uint32_t k_per = dk < disk_deleted_nhoods[did].size()
+                             ? dk
+                             : disk_deleted_nhoods[did].size();
+        for (uint32_t j = 0;
+             j < this->disk_deleted_nhoods[did].size() && k_per > 0;
+             j++, k_per--) {
+          auto it_delete = std::find(with_deleted_nodes_nbrs.begin(),
+                                     with_deleted_nodes_nbrs.end(),
+                                     this->disk_deleted_nhoods[did][j]);
+          auto it_not_in_old =
+              std::find(in_nodes_old_nbrs.begin(), in_nodes_old_nbrs.end(),
+                        this->disk_deleted_nhoods[did][j]);
+          auto it_not_in_final = std::find(final_nbrs.begin(), final_nbrs.end(),
+                                           this->disk_deleted_nhoods[did][j]);
+          if (it_delete != with_deleted_nodes_nbrs.end() &&
+              it_not_in_old == in_nodes_old_nbrs.end() &&
+              it_not_in_final == final_nbrs.end()) {
+            final_nbrs.push_back(this->disk_deleted_nhoods[did][j]);
+          }
+        }
+      }
+      disk_node.nnbrs = final_nbrs.size();
+      *(disk_node.nbrs - 1) = disk_node.nnbrs;
+      // compute PQ dists and shrink
+      std::vector<float> final_nbrs_dists(final_nbrs.size(), 0.0f);
+      this->disk_index->compute_pq_dists(id, final_nbrs.data(),
+                                         final_nbrs_dists.data(),
+                                         (_u32) final_nbrs.size(), scratch);
+
+      std::vector<uint32_t> indices(final_nbrs.size());
+      for (size_t i = 0; i < final_nbrs.size(); ++i) {
+        indices[i] = i;
+      }
+
+      std::sort(indices.begin(), indices.end(),
+                [&final_nbrs_dists](int a, int b) {
+                  return final_nbrs_dists[a] < final_nbrs_dists[b];
+                });
+      for (uint32_t i = 0; i < final_nbrs.size(); i++) {
+        disk_node.nbrs[i] = final_nbrs[indices[i]];
+      }
     }
+
+    return 2;
   }
 
   template<typename T, typename TagT>
@@ -787,6 +981,8 @@ namespace diskann {
       last_id++;
     }
 
+    std::sort(free_ids.begin(), free_ids.end());
+
     // assign free IDs to all new IDs
     diskann::cout << "RENAME: Assigning IDs.\n";
     uint32_t next_free_index = 0;
@@ -808,6 +1004,7 @@ namespace diskann {
           continue;
         }
         const uint32_t new_id = this->free_ids[next_free_index];
+
         assert(new_id < last_id);
         rename_pairs[next_free_index].first = offset + j;
         rename_pairs[next_free_index].second = new_id;
@@ -850,6 +1047,7 @@ namespace diskann {
 
   template<typename T, typename TagT>
   uint32_t StreamingMerger<T, TagT>::rename_inverse(uint32_t renamed_id) const {
+    // std::cout << "In rename_inverse_function, disk_id: " << renamed_id;
     auto iter = std::lower_bound(
         this->inverse_list.begin(), this->inverse_list.end(),
         std::make_pair(renamed_id, std::numeric_limits<uint32_t>::max()),
@@ -857,14 +1055,21 @@ namespace diskann {
           return left.first < right.first;
         });
     if (iter == this->inverse_list.end()) {
+      // std::cout << " in inverse_list not found!\n";
       return std::numeric_limits<uint32_t>::max();
     } else {
       uint32_t idx = (_u32) std::distance(this->inverse_list.begin(), iter);
       const std::pair<uint32_t, uint32_t> &p = this->inverse_list[idx];
-      if (p.first == renamed_id)
+      if (p.first == renamed_id) {
+        // std::cout << " in inverse_list  found! mem_id: " << p.second <<
+        // "\n";
         return p.second;
-      else
+      } else {
+        // std::cout << " in inverse_list  found! but "
+        //              "disk_id!=inverse_list.first. p.first= "
+        //           << p.first << "\n";
         return std::numeric_limits<uint32_t>::max();
+      }
     }
   }
 
@@ -906,7 +1111,7 @@ namespace diskann {
     }
     assert(offset_id < this->offset_ids.back() + INDEX_OFFSET);
     uint32_t index_no =
-        (uint32_t)((offset_id - this->offset_ids[0]) / INDEX_OFFSET);
+        (uint32_t) ((offset_id - this->offset_ids[0]) / INDEX_OFFSET);
     assert(index_no < this->offset_ids.size());
     return index_no;
   }
@@ -951,8 +1156,8 @@ namespace diskann {
     size_t allocSize = ROUND_UP(npts * sizeof(TagT), 8 * sizeof(TagT));
     alloc_aligned(((void **) &cur_tags), allocSize, 8 * sizeof(TagT));
 
-    //TODO: We must detect holes in a better way. Currently, it is possible
-    //that one of the tags will be uint32_t::max() and will fail.
+    // TODO: We must detect holes in a better way. Currently, it is possible
+    // that one of the tags will be uint32_t::max() and will fail.
     for (uint32_t i = 0; i < npts; i++) {
       TagT cur_tag;
       // check if `i` is in inverse map
@@ -961,8 +1166,14 @@ namespace diskann {
         cur_tag = this->disk_tags[i];
         if (this->deleted_tags.find(cur_tag) != this->deleted_tags.end()) {
           *(cur_tags + i) = std::numeric_limits<uint32_t>::max();
-        } else
+          // std::cout << "loc: " << i << " tag: " << *(cur_tags + i)
+          //           << " in delted_tags\n";
+        } else {
           *(cur_tags + i) = cur_tag;
+          // std::cout << "loc: " << i << " tag: " << *(cur_tags + i)
+          //           << " in disk_nodes\n";
+        }
+
       } else {
         const uint32_t index_no = this->get_index_id(offset_id);
         const uint32_t index_local_id = offset_id - this->offset_ids[index_no];
@@ -970,19 +1181,25 @@ namespace diskann {
         if (this->latter_deleted_tags[index_no].find(cur_tag) !=
             this->latter_deleted_tags[index_no].end()) {
           *(cur_tags + i) = std::numeric_limits<uint32_t>::max();
-        } else
+
+          // std::cout << "loc: " << i << " tag: " << *(cur_tags + i)
+          //           << " in latter_deleted_tags\n";
+        } else {
           *(cur_tags + i) = cur_tag;
+          // std::cout << "loc: " << i << " tag: " << *(cur_tags + i)
+          //           << " in mem_nodes\n";
+        }
       }
     }
     diskann::save_bin<TagT>(tag_out_filename, cur_tags, npts, 1);
 
-    diskann::cout << "Tags written to  " << tag_out_filename << " in " << timer.elapsed()
-                  << " microsec" << std::endl;
+    diskann::cout << "Tags written to  " << tag_out_filename << " in "
+                  << timer.elapsed() << " microsec" << std::endl;
 
-    //Should not mix delete with alloc aligned
-    //TODO: This will work because we are dealing with uint64 at the moment. 
-    //If we ever have string tags, this'll fail spectacularly.
-    //delete[] cur_tags;
+    // Should not mix delete with alloc aligned
+    // TODO: This will work because we are dealing with uint64 at the
+    // moment. If we ever have string tags, this'll fail spectacularly.
+    // delete[] cur_tags;
     aligned_free(cur_tags);
     // release all tags -- automatically deleted since using `unique_ptr`
     this->mem_tags.clear();
@@ -990,130 +1207,183 @@ namespace diskann {
 
   template<typename T, typename TagT>
   void StreamingMerger<T, TagT>::process_merges() {
-    // buf to hold data being read
+    size_t page_num = 0;
+    size_t page_changed_num = 0;
+    Timer  merge_timer;
+    Timer  build_help_timer;
+    tbb::concurrent_unordered_map<uint32_t, tbb::concurrent_vector<uint32_t>>
+        change_id_map;
+    // disk
+#pragma omp parallel for schedule(dynamic, 16) num_threads(MAX_N_THREADS)
+    for (size_t i = 0; i < this->disk_delta->graph.size(); i++) {
+      auto delta = this->disk_delta->graph[i];
+      if (delta.size()) {
+        size_t sector_id =
+            1 + i / (SECTORS_PER_MERGE * this->disk_index->nnodes_per_sector);
+        change_id_map[sector_id].push_back(i);
+      }
+    }
+    // mem
+#pragma omp parallel for schedule(dynamic, 16) num_threads(MAX_N_THREADS)
+    for (size_t i = 0; i < this->mem_deltas.size(); i++) {
+      auto delta = mem_deltas[i];
+      for (size_t j = 0; j < delta->graph.size(); j++) {
+        size_t offset_id = this->offset_ids[i] + j;
+        size_t idx = rename(offset_id);
+        size_t sector_id =
+            1 + idx / (SECTORS_PER_MERGE * this->disk_index->nnodes_per_sector);
+        change_id_map[sector_id].push_back(idx);
+      }
+    }
+
+    std::cout << "changed_num_1: " << change_id_map.size() << "\n";
+
+    std::vector<uint32_t> page_id_vec;
+    for (const auto &pair : change_id_map) {
+      page_id_vec.push_back(pair.first);
+    }
+    size_t read_nums =
+        (page_id_vec.size() - 1 + pages_per_read) / pages_per_read;
+    std::cout << "read_nums_patch: " << read_nums
+              << ", pagenum_per_read: " << pages_per_read << std::endl;
+
+    std::vector<std::vector<uint32_t>> sector_per_read(read_nums,
+                                                       std::vector<uint32_t>());
+
+    for (size_t i = 0; i < read_nums; i++) {
+      int now_pages = 0;
+      while (now_pages < pages_per_read &&
+             (i * pages_per_read + now_pages) < page_id_vec.size()) {
+        sector_per_read[i].push_back(
+            page_id_vec[i * pages_per_read + now_pages]);
+        now_pages++;
+      }
+    }
+
     char *buf = nullptr;
-    alloc_aligned((void **) &buf, SECTORS_PER_MERGE * SECTOR_LEN, SECTOR_LEN);
+    alloc_aligned((void **) &buf, (size_t) pages_per_read * SECTOR_LEN,
+                  SECTOR_LEN);
+    size_t overR = 0;
+    size_t notoverR = 0;
+    double io_time = 0;
+    double build_help_time = (double) build_help_timer.elapsed() / 1000000.0;
 
-    Timer                   merge_timer;
     std::unique_ptr<char[]> sector_buf = std::make_unique<char[]>(SECTOR_LEN);
+    std::fstream            output_writer(this->final_index_file,
+                                          std::ios::binary | std::ios::out | std::ios::in);
 
-    std::ofstream output_writer(this->final_index_file,
-                                std::ios::binary | std::ios::ate);
-
+    output_writer.seekp(0, std::ios::beg);
     output_writer.write(sector_buf.get(), SECTOR_LEN);
-    // start at sector=1 in output file for reading + writing
-    uint64_t cur_offset = SECTOR_LEN;
-
-    // batch consolidate deletes
-    std::vector<DiskNode<T>>                                disk_nodes;
-    std::vector<std::pair<uint32_t, std::vector<uint32_t>>> id_nhoods;
-    uint32_t start_id = 0, new_start_id;
-    diskann::cout << "Merging inserts into SSD-DiskANN.\n";
-    uint64_t              delta_avg = 0, delta_max = 0, delta_count = 0;
-    std::atomic<uint64_t> counts;
-    counts.store(0);
-
-    // aux_writer << "buf_min = " << (uint64_t) buf << ", buf_max = " <<
-    // (uint64_t) (buf + SECTORS_PER_MERGE * SECTOR_LEN) << "\n";
-    while (start_id < this->disk_npts) {
-      // zero buf for better consistency
-      memset(buf, 0, SECTORS_PER_MERGE * SECTOR_LEN);
-      new_start_id = this->disk_index->merge_read(disk_nodes, start_id,
-                                                  SECTORS_PER_MERGE, buf);
-#pragma omp parallel for schedule(dynamic, 128) num_threads(MAX_N_THREADS)
-      for (int64_t idx = 0; idx < (int64_t) disk_nodes.size(); idx++) {
-        // get thread-specific scratch
-        int      omp_thread_no = omp_get_thread_num();
-        uint8_t *thread_scratch = this->thread_bufs[omp_thread_no];
-
-        DiskNode<T> &disk_node = disk_nodes[idx];
-        uint32_t     id = disk_node.id;
-
-        std::vector<uint32_t> nhood;
-        std::vector<uint32_t> deltas;
-        uint32_t              offset_id = this->rename_inverse(id);
-        // replaced by new vector, copy coords and proceed as normal
-        if (offset_id != std::numeric_limits<uint32_t>::max()) {
-          // copy coords
-          const T *vec = this->get_mem_data(offset_id);
-          assert(vec != nullptr);
-          memcpy(disk_node.coords, vec, this->ndims * sizeof(T));
-          disk_node.nnbrs = 0;
-          *(disk_node.nbrs - 1) = 0;  // also set on buffer
-          deltas = this->get_edge_list(offset_id);
-          // delta_count++;
-          // delta_avg += deltas.size();
-          // delta_max = std::max(delta_max, (uint64_t) deltas.size());
-        } else {
-          // not replaced
-          deltas = this->get_edge_list(id);
-          delta_count++;
-          delta_avg += deltas.size();
-          delta_max = std::max(delta_max, (uint64_t) deltas.size());
-        }
-
-        // if no edges to add, continue
-        if (deltas.empty()) {
-          continue;
-        }
-
-        uint32_t nnbrs = disk_node.nnbrs;
-        nhood.insert(nhood.end(), disk_node.nbrs, disk_node.nbrs + nnbrs);
-        nhood.insert(nhood.end(), deltas.begin(), deltas.end());
-        // rename nbrs in nhood to use PQ dist comparisons
-        // this->rename(nhood); // skipping since get_edge_list() renames delta
-        // edges
-
-        // prune neighbor list ONLY if exceeding graph max out-degree (`range`)
-        if (nhood.size() > this->range) {
-          std::vector<float>    dists(nhood.size(), 0.0f);
-          std::vector<Neighbor> pool(nhood.size());
-          this->disk_index->compute_pq_dists(id, nhood.data(), dists.data(),
-                                             (_u32) nhood.size(),
-                                             thread_scratch);
-          for (uint32_t k = 0; k < nhood.size(); k++) {
-            pool[k].id = nhood[k];
-            pool[k].distance = dists[k];
-            // diskann::cout << k << ": id=" << nhood[k] << ", dist=" <<
-            // dists[k] << "\n";
-          }
-          nhood.clear();
-          // prune pool
-          std::sort(pool.begin(), pool.end());
-          this->prune_neighbors_pq(pool, nhood, thread_scratch);
-        }
-        // copy edges from nhood to disk node
-        disk_node.nnbrs = (_u32) nhood.size();
-        // *(disk_node.nbrs - 1) = nhood.size(); // write to buf
-        *(disk_node.nbrs - 1) = (_u32) nhood.size();  // write to buf
-        for (uint32_t i = 0; i < disk_node.nnbrs; i++) {
-          disk_node.nbrs[i] = nhood[i];
-        }
-        memcpy(disk_node.nbrs, nhood.data(),
-               disk_node.nnbrs * sizeof(uint32_t));
-        // 	aux_writer << "disk_node.nbrs =  " << (uint64_t) disk_node.nbrs <<
-        // ", id = ";
-        uint32_t lcounts = 0;
-        for (auto &nbr : nhood) {
-          if (nbr >= 980000)
-            lcounts++;
-        }
-        counts += lcounts;
+    diskann::cout << "Merging inserts into SSD-DiskANN." << std::endl;
+    for (size_t j = 0; j < read_nums; j++) {
+      std::vector<uint32_t> &sector_ids = sector_per_read[j];
+      std::vector<uint32_t>  start_ids(sector_ids.size());
+      int chunk_size = 1 > (sector_ids.size() / (MAX_N_THREADS))
+                           ? 1
+                           : (sector_ids.size() / (MAX_N_THREADS));
+#pragma omp parallel for schedule(dynamic, chunk_size) \
+    num_threads(MAX_N_THREADS)
+      for (size_t i = 0; i < sector_ids.size(); i++) {
+        start_ids[i] = (sector_ids[i] - 1) * this->nnodes_per_sector;
       }
 
-      cur_offset += SECTORS_PER_MERGE * SECTOR_LEN;
-      output_writer.write(buf, SECTORS_PER_MERGE * SECTOR_LEN);
-      diskann::cout << new_start_id << " / " << this->disk_npts
-                    << " nodes processed.\n";
-      start_id = new_start_id;
-    }
-    diskann::cout << "Delta statistics:\nMax: " << delta_max
-                  << ", Avg: " << (float) delta_avg / (float) delta_count
-                  << "\n";
-    diskann::cout << "Old -> new edges: " << counts.load() << "\n";
+      std::vector<std::vector<DiskNode<T>>> disk_nodess;
 
-    // close index
+      Timer io_r;
+      this->disk_index->merge_read_through_diff_pages(
+          disk_nodess, disk_tags, disk_deleted_ids, start_ids, buf, true);
+      io_time += (double) io_r.elapsed() / 1000000.0;
+      assert(disk_nodess.size() == sector_ids.size());
+
+#pragma omp parallel for schedule(dynamic, 1) num_threads(MAX_N_THREADS)
+      for (size_t k = 0; k < sector_ids.size(); k++) {
+        std::vector<DiskNode<T>>         &disk_nodes = disk_nodess[k];
+        _u32                              sector_id = sector_ids[k];
+        tbb::concurrent_vector<uint32_t> &vec = change_id_map[sector_id];
+
+        int      omp_thread_no = omp_get_thread_num();
+        uint8_t *thread_scratch =
+            reinterpret_cast<uint8_t *>(this->thread_bufs[omp_thread_no]);
+
+        assert(thread_scratch != nullptr);
+
+        for (size_t i = 0; i < vec.size(); i++) {
+          size_t idx = vec[i] - start_ids[k];
+
+          assert(idx < disk_nodes.size());
+
+          DiskNode<T>          &disk_node = disk_nodes[idx];
+          uint32_t              id = disk_node.id;
+          std::vector<uint32_t> nhood;
+          std::vector<uint32_t> deltas;
+          uint32_t              offset_id = this->rename_inverse(id);
+
+          // replaced by new vector, copy coords and proceed as normal
+          if (offset_id != std::numeric_limits<uint32_t>::max()) {
+            const T *vec = this->get_mem_data(offset_id);
+            assert(vec != nullptr);
+            memcpy(disk_node.coords, vec, this->ndims * sizeof(T));
+
+            disk_node.nnbrs = 0;
+            *(disk_node.nbrs - 1) = 0;  // also set on buffer
+            deltas = this->get_edge_list(offset_id);
+
+          } else {  // old point，need to add hoods
+            // not replaced
+            deltas = this->get_edge_list(id);
+          }
+
+          // if no edges to add, continue
+          if (deltas.empty()) {
+            continue;
+          }
+
+          uint32_t nnbrs = disk_node.nnbrs;
+          nhood.insert(nhood.end(), disk_node.nbrs, disk_node.nbrs + nnbrs);
+          nhood.insert(nhood.end(), deltas.begin(), deltas.end());
+
+          if (nhood.size() > this->range) {
+            std::vector<float>    dists(nhood.size(), 0.0f);
+            std::vector<Neighbor> pool(nhood.size());
+
+            __sync_fetch_and_add(&overR, 1);
+            this->disk_index->compute_pq_dists(id, nhood.data(), dists.data(),
+                                               (_u32) nhood.size(),
+                                               thread_scratch);
+            for (uint32_t k = 0; k < nhood.size(); k++) {
+              pool[k].id = nhood[k];
+              pool[k].distance = dists[k];
+            }
+            nhood.clear();
+            // prune pool
+            std::sort(pool.begin(), pool.end());
+            this->prune_neighbors_pq(pool, nhood, thread_scratch);
+          } else {
+            __sync_fetch_and_add(&notoverR, 1);
+          }
+          // copy edges from nhood to disk node
+          disk_node.nnbrs = (_u32) nhood.size();
+          *(disk_node.nbrs - 1) = (_u32) nhood.size();
+
+          for (uint32_t i = 0; i < disk_node.nnbrs; i++) {
+            disk_node.nbrs[i] = nhood[i];
+          }
+
+          memcpy(disk_node.nbrs, nhood.data(),
+                 disk_node.nnbrs * sizeof(uint32_t));
+        }
+      }
+      Timer io_w;
+      this->disk_index->merge_write_through_diff_pages(start_ids, buf);
+      io_time += (double) io_w.elapsed() / 1000000.0;
+    }
+
+    std::cout << " OverR: " << overR << " NotoverR: " << notoverR << "\n";
+    std::cout << "build_help_time_patch: " << build_help_time
+              << " , io_time: " << io_time << std::endl;
     output_writer.close();
+
+    aligned_free((void *) buf);
 
     // [_u64 file size][_u64 nnodes][_u64 medoid ID][_u64 max_node_len][_u64
     // nnodes_per_sector]
@@ -1122,7 +1392,7 @@ namespace diskann {
                                    nnodes_per_sector,
                                SECTORS_PER_MERGE)) *
                          (uint64_t) SECTOR_LEN;
-    memset(buf, 0, SECTORS_PER_MERGE * SECTOR_LEN);
+
     std::vector<uint64_t> output_metadata;
     output_metadata.push_back((uint64_t) this->disk_npts);
     output_metadata.push_back((uint64_t) this->ndims);
@@ -1140,32 +1410,44 @@ namespace diskann {
 
     diskann::save_bin<_u64>(final_index_file, output_metadata.data(),
                             output_metadata.size(), 1, 0);
-    // free buf
-    aligned_free((void *) buf);
+
     double e2e_time = ((double) merge_timer.elapsed()) / (1000000.0);
+
     diskann::cout << "Time to merge the inserts to disk: " << e2e_time << "s."
                   << std::endl;
   }
 
-
   template<typename T, typename TagT>
-  void StreamingMerger<T, TagT>::merge(const char *                    disk_in,
-                                       const std::vector<std::string> &mem_in,
-                                       const char *                    disk_out,
-                                       std::vector<const std::vector<TagT>*> &deleted_tags_vectors,
-                                       std::string  &working_folder) {
+  void StreamingMerger<T, TagT>::merge(
+      const char *disk_in, const std::vector<std::string> &mem_in,
+      const char                             *disk_out,
+      std::vector<const std::vector<TagT> *> &deleted_tags_vectors,
+      std::string &working_folder, uint32_t id_map) {
     // load disk index
     this->disk_index_out_path = disk_out;
     this->disk_index_in_path = disk_in;
     this->TMP_FOLDER = working_folder;
     std::cout << "Working folder : " << working_folder << std::endl;
-    this->temp_disk_index_path = getTempFilePath(working_folder, "temp_disk_index");
-    this->temp_pq_coords_path = getTempFilePath(working_folder, "temp_pq_compressed");
-    this->temp_tags_path = getTempFilePath(working_folder, "temp_tags");
-    std::cout << this->temp_disk_index_path << " , "  << this->temp_pq_coords_path << "  ,  " << this->temp_tags_path << std::endl;
-    this->final_index_file =
-        this->_single_file_index ? this->disk_index_out_path
+    if (id_map != 2)
+      this->temp_disk_index_path =
+          getTempFilePath(working_folder, "_temp_disk_index");
+    else {
+      // in_place
+      this->temp_disk_index_path = working_folder + "_disk.index";
+    }
+
+    this->temp_pq_coords_path =
+        getTempFilePath(working_folder, "_temp_pq_compressed");
+    this->temp_tags_path = getTempFilePath(working_folder, "_temp_tags");
+    std::cout << this->temp_disk_index_path << " , "
+              << this->temp_pq_coords_path << "  ,  " << this->temp_tags_path
+              << std::endl;
+    this->final_index_file = this->_single_file_index
+                                 ? this->disk_index_out_path
                                  : this->disk_index_out_path + "_disk.index";
+    std::cout << "final_index_file: " << this->final_index_file
+              << " disk_index_out_path: " << this->disk_index_out_path
+              << std::endl;
     this->final_pq_coords_file =
         this->_single_file_index
             ? this->disk_index_out_path
@@ -1174,7 +1456,6 @@ namespace diskann {
         this->_single_file_index
             ? this->disk_index_out_path
             : this->disk_index_out_path + "_disk.index.tags";
-
 
 #ifndef _WINDOWS
     std::shared_ptr<AlignedFileReader> reader =
@@ -1194,17 +1475,19 @@ namespace diskann {
                   << " into object: " << std::hex << (_u64) &
         (this->disk_index) << std::dec << std::endl;
     this->disk_index->load(disk_in, NUM_INDEX_LOAD_THREADS);
-
-    uint32_t node_cache_count = 1 + (uint32_t) round(this->disk_index->return_nd() * 0.01);
+    uint32_t node_cache_count =
+        1 + (uint32_t) round(this->disk_index->return_nd() * 0.01);
     node_cache_count = node_cache_count > PQ_FLASH_INDEX_MAX_NODES_TO_CACHE
                            ? PQ_FLASH_INDEX_MAX_NODES_TO_CACHE
                            : node_cache_count;
     std::vector<uint32_t> cache_node_list;
-    this->disk_index->cache_bfs_levels(node_cache_count,
-                                       cache_node_list);
+
+    this->disk_index->cache_bfs_levels(node_cache_count, cache_node_list);
+
     this->disk_index->load_cache_list(cache_node_list);
+
     this->disk_tags = this->disk_index->get_tags();
-    this->init_ids = this->disk_index->get_init_ids();
+    this->init_ids = this->disk_index->get_init_ids();  // medoid
     this->disk_npts = (_u32) this->disk_index->return_nd();
     this->disk_thread_data = this->disk_index->get_thread_data();
     auto res_pq = this->disk_index->get_pq_config();
@@ -1214,10 +1497,10 @@ namespace diskann {
     this->max_node_len = (_u32) this->disk_index->max_node_len;
     _u32 max_degree =
         (max_node_len - (sizeof(T) * this->ndims)) / sizeof(uint32_t) - 1;
-    this->range = max_degree; 
+    this->range = max_degree;
     diskann::cout << "Setting range to: " << this->range << std::endl;
     this->disk_index_num_frozen = this->disk_index->get_num_frozen_points();
-    this->disk_index_frozen_loc = this->disk_index->get_frozen_loc(); 
+    this->disk_index_frozen_loc = this->disk_index->get_frozen_loc();
 
     // create deltas
     this->disk_delta = new GraphDelta(0, this->disk_npts);
@@ -1226,6 +1509,7 @@ namespace diskann {
     // load mem-indices
     for (auto &mem_index_path : mem_in) {
       uint32_t npts;
+      // single=1,index_tag[i]=i
       if (!(this->_single_file_index)) {
         std::string   ind_path = mem_index_path;
         std::string   data_path = mem_index_path + ".data";
@@ -1243,30 +1527,30 @@ namespace diskann {
             this->dist_metric, bin_ndims, bin_npts + 100, true,
             this->_single_file_index, true, false);
         _u64 n1, n2, n3;
-        T *  data_load;
+        T   *data_load;
         diskann::load_aligned_bin<T>(data_path, data_load, n1, n2, n3);
-        npts = (_u32)(n1 - 1);
+        npts = (_u32) (n1 - 1);
         assert(npts < MAX_PTS_PER_MEM_INDEX);
         this->mem_npts.push_back(npts);
         this->mem_data.push_back(data_load);
+
         uint32_t index_offset = (_u32) base_offset;
         base_offset += INDEX_OFFSET;
         this->offset_ids.push_back(index_offset);
         this->mem_deltas.push_back(new GraphDelta(index_offset, npts));
         tsl::robin_set<uint32_t> temp_del_set;
-        if(file_exists(mem_index_path + ".del"))
-        {
-            mem_index->load_delete_set(mem_index_path + ".del");
-            mem_index->get_delete_set(temp_del_set);
+        if (file_exists(mem_index_path + ".del")) {
+          mem_index->load_delete_set(mem_index_path + ".del");
+          mem_index->get_delete_set(temp_del_set);
         }
         this->mem_deleted_ids.push_back(temp_del_set);
         mem_index->load_tags(mem_index_path + ".tags");
         // manage tags
-        std::unique_ptr<TagT[]> index_tags;
+        std::unique_ptr<TagT[]> index_tags;  // index_tags[loc]=Tagt
         index_tags.reset(new TagT[npts]);
 
         const std::unordered_map<uint32_t, TagT> &loc_tag_map =
-            *mem_index->get_tags();
+            *mem_index->get_tags();  // first=loc,second=Tagt
         for (uint32_t k = 0; k < npts; k++) {
           auto iter = loc_tag_map.find(k);
           if (iter == loc_tag_map.end()) {
@@ -1293,16 +1577,16 @@ namespace diskann {
 
         // load mem_index_data with appropriate offset
         _u64 n1, n2, n3;
-        T *  data_load;
+        T   *data_load;
         diskann::load_aligned_bin<T>(mem_index_path, data_load, n1, n2, n3,
                                      file_offset_data[1]);
-        npts = (_u32)(n1 - 1);
+        npts = (_u32) (n1 - 1);
         assert(npts < MAX_PTS_PER_MEM_INDEX);
         this->mem_npts.push_back(npts);
         this->mem_data.push_back(data_load);
 
-        // call mem_index constructor with dynamic index and single index file
-        // set to true
+        // call mem_index constructor with dynamic index and single index
+        // file set to true
         auto mem_index = std::make_unique<Index<T, TagT>>(
             this->dist_metric, data_dim, data_num_points + 100, true,
             this->_single_file_index, true, false);
@@ -1340,19 +1624,22 @@ namespace diskann {
 
     for (size_t j = 0; j < deleted_tags_vectors.size(); j++) {
       this->latter_deleted_tags.push_back(tsl::robin_set<TagT>());
-      for (size_t i = j+1; i < deleted_tags_vectors.size(); i++) {
+      for (size_t i = j + 1; i < deleted_tags_vectors.size(); i++) {
         for (size_t k = 0; k < deleted_tags_vectors[i]->size(); k++) {
           this->latter_deleted_tags[j].insert((*deleted_tags_vectors[i])[k]);
         }
       }
     }
+    u_int32_t deleted_tags_num = 0;
 
-    //TODO: See if this can be included in the previous loop
+    // TODO: See if this can be included in the previous loop
     for (auto &deleted_tags_vector : deleted_tags_vectors) {
       for (size_t i = 0; i < deleted_tags_vector->size(); i++) {
         this->deleted_tags.insert((*deleted_tags_vector)[i]);
+        deleted_tags_num++;
       }
     }
+    std::cout << "deleted_tags_num: " << deleted_tags_num << std::endl;
 
     diskann::cout << "Allocating thread scratch space -- "
                   << PER_THREAD_BUF_SIZE / (1 << 20) << " MB / thread.\n";
@@ -1363,22 +1650,23 @@ namespace diskann {
       this->thread_bufs[i] = this->thread_pq_scratch + i * PER_THREAD_BUF_SIZE;
     }
 
-    mergeImpl();
+    mergeImpl(id_map);
   }
 
   template<typename T, typename TagT>
-  void StreamingMerger<T, TagT>::mergeImpl() {
+  void StreamingMerger<T, TagT>::mergeImpl(uint32_t id_map) {
     // populate deleted IDs
+
     this->compute_deleted_ids();
-    // BEGIN -- graph on disk has deleted references, maybe some holes
-    // populate deleted nodes
-    this->populate_deleted_nhoods();
+
     // process all deletes
+    get_io_info("get_begin");
     this->process_deletes();
-    // END -- graph on disk has NO deleted references, maybe some holes
+    get_io_info("get_end");
+    std::cout << "IO_2" << std::endl;
 
     diskann::cout << "Computing rename-map.\n";
-    // compute rename map
+
     this->compute_rename_map();
 
     // get max ID + 1 in rename-map as new max pts
@@ -1386,31 +1674,16 @@ namespace diskann {
     // alternative using list
     new_max_pts = std::max(this->inverse_list.back().first, new_max_pts);
     new_max_pts = new_max_pts + 1;
+    std::cout << "old_disk_npts: " << this->disk_npts
+              << " now_disk_npts: " << new_max_pts << "\n";
 
-    // TODO (correct) :: figure out naming scheme
-    //std::string new_disk_out(this->disk_index_out_path + "_disk.index");
-    //diskann::cout << "RELOAD: Creating new disk graph at " << new_disk_out
-    //              << "\n";
-    //std::string new_pq_prefix(this->disk_index_out_path + "_pq");
-    //std::string new_pq_coords(new_pq_prefix + "_compressed.bin");
     diskann::cout << "RELOAD: Creating new PQ coords file "
                   << this->temp_pq_coords_path << std::endl;
-
-   
-    // TODO (correct) :: write to the right file
-    //std::string tmp_file = TMP_FOLDER + "/index_ravi";
 
 #ifdef USE_TCMALLOC
     MallocExtension::instance()->ReleaseFreeMemory();
 #endif
 
-    //this->output_writer.open(tmp_file, std::ios::out | std::ios::binary);
-    //assert(this->output_writer.is_open());
-
-    // BEGIN -- PQ data on disk not consistent, not in right order
-    // write outdated PQ data into pq writer with intentionally wrong header -
-    // all these updates are made to a separate file, to be merged later into
-    // thw index file if instructed
     std::fstream pq_writer(this->temp_pq_coords_path,
                            std::ios::out | std::ios::binary | std::ios::trunc);
     assert(pq_writer.is_open());
@@ -1433,7 +1706,7 @@ namespace diskann {
     pq_writer.close();
 
     // write out tags
-    //const std::string tag_file = new_disk_out + ".tags";
+    // const std::string tag_file = new_disk_out + ".tags";
     this->write_tag_file(this->temp_tags_path, new_max_pts);
 
     // switch index to read-only mode
@@ -1457,8 +1730,8 @@ namespace diskann {
               << " Disk points: " << this->disk_npts
               << " Frozen point id: " << this->init_ids[0] << std::endl;
 
-    // call inserts
     this->process_inserts();
+
 #ifdef USE_TCMALLOC
     MallocExtension::instance()->ReleaseFreeMemory();
 #endif
@@ -1486,6 +1759,7 @@ namespace diskann {
     const std::function<uint32_t(uint32_t)> rename_func = [this](uint32_t id) {
       return this->rename(id);
     };
+
     this->disk_delta->rename_edges(rename_func);
     for (auto &delta : this->mem_deltas) {
       delta->rename_edges(rename_func);
@@ -1494,42 +1768,41 @@ namespace diskann {
     // start merging
     // BEGIN -- graph on disk has NO deleted references, NO newly inserted
     // points
-    
-    
+    get_io_info("get_begin");
     this->process_merges();
-    // END -- graph on disk has NO deleted references, has newly inserted points
+    get_io_info("get_end");
+    std::cout << "IO_3" << std::endl;
 
-    /* copy output from temp_file -> new_disk_out */
-    // reset temp_file ptr
-    //this->output_writer.close();
+    // END -- graph on disk has NO deleted references, has newly inserted
+    // points
 
     auto copy_file = [](const std::string &src, const std::string &dest) {
+      Timer copytimer;
       diskann::cout << "COPY :: " << src << " --> " << dest << "\n";
       std::ofstream dest_writer(dest, std::ios::binary);
       std::ifstream src_reader(src, std::ios::binary);
       dest_writer << src_reader.rdbuf();
       dest_writer.close();
       src_reader.close();
+      double e2e_time = ((double) copytimer.elapsed()) / (1000000.0);
+      std::cout << "copy_file_time: " << e2e_time << std::endl;
     };
-    // copy index
-    //copy_file(tmp_file, this->disk_index_out_path);
 
     // merge files if needed
     if (this->_single_file_index) {
       // update metadata with pq_pivots_file_size, pq_vector_file_size
       size_t                nr, nc;
       std::vector<uint64_t> output_metadata;
-      uint64_t *            out_metadata;
+      uint64_t             *out_metadata;
 
-      diskann::load_bin<uint64_t>(this->final_index_file, out_metadata, nr,
-                                  nc);
+      diskann::load_bin<uint64_t>(this->final_index_file, out_metadata, nr, nc);
       for (size_t i = 0; i < nr; i++)
         output_metadata.push_back(out_metadata[i]);
 
       delete[] out_metadata;
 
       // tags
-      TagT *   tags;
+      TagT    *tags;
       uint64_t tag_num, tag_dim;
       diskann::load_bin(this->temp_tags_path, tags, tag_num, tag_dim);
       size_t tag_bytes_written =
@@ -1541,7 +1814,7 @@ namespace diskann {
                                 tag_bytes_written);
 
       size_t      nr_in, nc_in;
-      uint64_t *  in_metadata;
+      uint64_t   *in_metadata;
       std::string disk_in = this->_single_file_index
                                 ? this->disk_index_in_path
                                 : this->disk_index_in_path + "_disk.index";
@@ -1552,13 +1825,12 @@ namespace diskann {
       diskann::load_bin<uint64_t>(disk_in, pq_metadata_in, nr_pq_in, nc_pq_in,
                                   in_metadata[8]);
       diskann::save_bin<uint64_t>(this->final_index_file, pq_metadata_in,
-                                  nr_pq_in,
-                                  nc_pq_in,
+                                  nr_pq_in, nc_pq_in,
                                   output_metadata[output_metadata.size() - 1]);
 
       size_t pq_pivots_total_bytes_written = 0;
       // pq_pivots
-      float *  pq_pivots_data;
+      float   *pq_pivots_data;
       uint64_t pq_pts, pq_dims;
       diskann::load_bin<float>(disk_in, pq_pivots_data, pq_pts, pq_dims,
                                in_metadata[8] + pq_metadata_in[0]);
@@ -1569,14 +1841,13 @@ namespace diskann {
       diskann::cout << "Written pivots to single index file" << std::endl;
 
       // pq centroids
-      float *  pq_centroid_data;
+      float   *pq_centroid_data;
       uint64_t centroid_num, centroid_dim;
       diskann::load_bin<float>(disk_in, pq_centroid_data, centroid_num,
                                centroid_dim,
                                in_metadata[8] + pq_metadata_in[1]);
       size_t pq_centroid_bytes = diskann::save_bin<float>(
-          this->final_index_file, pq_centroid_data, centroid_num,
-          centroid_dim,
+          this->final_index_file, pq_centroid_data, centroid_num, centroid_dim,
           output_metadata[output_metadata.size() - 1] + pq_metadata_in[1]);
       delete[] pq_centroid_data;
       diskann::cout << "Written centroids to single index file" << std::endl;
@@ -1633,21 +1904,213 @@ namespace diskann {
       std::string prefix_pq_in = this->disk_index_in_path + "_pq";
       std::string prefix_pq_out = this->disk_index_out_path + "_pq";
       // PQ pivots
+      std::cout << "prefix_pq_in: " << prefix_pq_in
+                << "prefix_pq_out: " << prefix_pq_out << std::endl;
+      if (id_map != 2)
+        copy_file(prefix_pq_in + "_pivots.bin", prefix_pq_out + "_pivots.bin");
+      diskann::save_bin<uint8_t>(this->final_pq_coords_file, this->pq_data,
+                                 (uint64_t) this->disk_npts,
+                                 (uint64_t) ndims_u32);
 
-      copy_file(prefix_pq_in + "_pivots.bin", prefix_pq_out + "_pivots.bin");
-      diskann::save_bin<uint8_t>(
-          this->final_pq_coords_file, this->pq_data, (uint64_t) this->disk_npts,
-          (uint64_t) ndims_u32);
-      
       copy_file(this->temp_tags_path, this->final_tags_file);
-
     }
 
     // destruct PQFlashIndex
     delete this->disk_index;
     this->disk_index = nullptr;
     diskann::cout << "Destroyed PQ Flash Index\n";
+  }
 
+  template<typename T, typename TagT>
+  void StreamingMerger<T, TagT>::get_sector_with_deleted_nbrs_nodes(
+      const std::string &indir,
+      tbb::concurrent_unordered_map<uint32_t, tbb::concurrent_vector<uint32_t>>
+          &sector_with_deleted_nbrs_nodes) {
+    Timer gswdnn;
+    std::cout << "Start get_sector_with_deleted_nbrs_nodes_id !" << std::endl;
+    std::ifstream infile(indir, std::ios::binary);
+
+    std::vector<char> read_buf(SECTOR_LEN);
+    infile.read(read_buf.data(), SECTOR_LEN);
+
+    _u64 npts = 0;
+    _u64 R = 0;
+    memcpy(&npts, read_buf.data(), sizeof(_u64));
+    memcpy(&R, read_buf.data() + sizeof(_u64), sizeof(_u64));
+    std::cout << "npts: " << npts << ", R: " << R << std::endl;
+
+    this->topological_size_per_node = (_u32) (1 + R) * sizeof(_u32);
+    this->topological_nnodes_per_sector =
+        SECTOR_LEN / this->topological_size_per_node;
+    this->topological_page_num =
+        (npts + this->topological_nnodes_per_sector - 1) /
+        this->topological_nnodes_per_sector;
+    size_t read_nums = (this->topological_page_num + topopages_per_read - 1) /
+                       topopages_per_read;
+    std::cout << "size_per_node: " << this->topological_size_per_node
+              << " nnodes_per_sector: " << this->topological_nnodes_per_sector
+              << " data_page_num: " << this->topological_page_num
+              << " all_page_num: " << this->topological_page_num + 1
+              << " total read_nums: " << read_nums << "\n";
+
+    read_buf.resize((size_t) SECTOR_LEN * topopages_per_read);
+    for (size_t i = 0; i < read_nums; i++) {
+      size_t pages_num =
+          (this->topological_page_num - i * topopages_per_read) <
+                  topopages_per_read
+              ? (this->topological_page_num - i * topopages_per_read)
+              : topopages_per_read;
+      infile.clear();
+      offset_t offset = SECTOR_LEN * (i * topopages_per_read + 1);
+      infile.seekg(offset, std::ios::beg);
+
+      infile.read(read_buf.data(), SECTOR_LEN * pages_num);
+
+      tbb::concurrent_vector<_u32>              delete_ids;
+      tbb::concurrent_vector<std::vector<_u32>> delete_id_nhoods;
+      tbb::concurrent_vector<_u32>              innode_ids;
+      int                                       chunk_size =
+          1 > (pages_num / (MAX_N_THREADS)) ? 1 : (pages_num / (MAX_N_THREADS));
+
+#pragma omp parallel for schedule(dynamic, chunk_size) \
+    num_threads(MAX_N_THREADS)
+      for (size_t j = 0; j < pages_num; j++) {
+        char *sector_buf = read_buf.data() + size_t(j * SECTOR_LEN);
+        _u32  sector_id = i * topopages_per_read + j;
+
+        for (size_t k = 0; k < this->topological_nnodes_per_sector; k++) {
+          size_t node_id = k + sector_id * this->topological_nnodes_per_sector;
+          if (node_id >= npts)
+            break;
+
+          offset_t offset_node = k * this->topological_size_per_node;
+
+          _u32 nnbrs = 0;
+          assert(nnbrs < 512);
+          memcpy(&nnbrs, sector_buf + offset_node, sizeof(_u32));
+          offset_node += sizeof(_u32);
+
+          std::vector<_u32> nbrs(nnbrs);
+          memcpy(nbrs.data(), sector_buf + offset_node, nnbrs * sizeof(_u32));
+          if (this->disk_deleted_ids.find(node_id) !=
+              this->disk_deleted_ids.end()) {
+            std::vector<uint32_t> active_nbrs;
+            for (const auto &nbr : nbrs) {
+              if (this->disk_deleted_ids.find(nbr) !=
+                  this->disk_deleted_ids.end()) {
+                active_nbrs.push_back(nbr);
+              }
+            }
+            delete_ids.push_back(node_id);
+            delete_id_nhoods.push_back(active_nbrs);
+            continue;
+          }
+
+          for (const auto &nbr : nbrs) {
+            if (this->disk_deleted_ids.find(nbr) !=
+                this->disk_deleted_ids.end()) {
+              _u32 page_id =
+                  1 + node_id / (SECTORS_PER_MERGE * this->nnodes_per_sector);
+              sector_with_deleted_nbrs_nodes[page_id].push_back(node_id);
+              break;
+            }
+          }
+        }
+      }
+
+      assert(delete_ids.size() == delete_id_nhoods.size());
+      for (size_t d = 0; d < delete_ids.size(); d++) {
+        this->disk_deleted_nhoods.insert(
+            std::make_pair(delete_ids[d], delete_id_nhoods[d]));
+        _u32 page_id = 1 + delete_ids[d] / (this->nnodes_per_sector);
+        sector_with_deleted_nbrs_nodes[page_id].push_back(delete_ids[d]);
+      }
+    }
+
+    assert(this->disk_deleted_nhoods.size() == this->disk_deleted_ids.size());
+    infile.close();
+    double e2e = (1.0 * gswdnn.elapsed()) / 1000000;
+    std::cout << "get in_nodes time: " << e2e << std::endl;
+  }
+
+  template<typename T, typename TagT>
+  void StreamingMerger<T, TagT>::process_topological_delete() {
+    Timer             topological_delete_timer;
+    std::string       disk_in = this->_single_file_index
+                                    ? this->disk_index_in_path
+                                    : this->disk_index_in_path + "_disk.index";
+    std::string       indir = disk_in + "_with_only_nbrs";
+    std::string       outdir = this->temp_disk_index_path + "_with_only_nbrs";
+    std::string       index_fname(outdir);
+    int               fd = open(index_fname.c_str(), O_WRONLY);
+    std::vector<char> data_buf(delete_nodes.size() * (this->range + 1) *
+                               sizeof(int));
+    std::cout << "Start process_topological_delete" << std::endl;
+#pragma omp parallel for schedule(dynamic, 1) num_threads(MAX_N_THREADS)
+    for (size_t i = 0; i < delete_nodes.size(); i++) {
+      DiskNode<T> &node = delete_nodes[i];
+      if (node.nnbrs == 0) {
+        offset_t off =
+            (1 + (offset_t) node.id / this->topological_nnodes_per_sector) *
+                SECTOR_LEN +
+            (offset_t) (node.id % this->topological_nnodes_per_sector) *
+                this->topological_size_per_node;
+        pwrite(fd, (char *) &node.nnbrs, sizeof(int), off);
+      } else {
+        offset_t off =
+            (1 + (offset_t) node.id / this->topological_nnodes_per_sector) *
+                SECTOR_LEN +
+            (offset_t) (node.id % this->topological_nnodes_per_sector) *
+                this->topological_size_per_node;
+        memcpy(data_buf.data() + i * (size_t) (this->range + 1) * sizeof(int),
+               &node.nnbrs, sizeof(int));
+        memcpy(data_buf.data() + i * (size_t) (this->range + 1) * sizeof(int) +
+                   sizeof(int),
+               &node.nbrs, sizeof(int) * this->range);
+        pwrite(fd,
+               (char *) data_buf.data() +
+                   i * (size_t) (this->range + 1) * sizeof(int),
+               (this->range + 1) * sizeof(int), off);
+      }
+    }
+
+    double e2e_time =
+        ((double) topological_delete_timer.elapsed()) / (1000000.0);
+    diskann::cout << "Processed Topological_Deletes in " << e2e_time << " s."
+                  << std::endl;
+  }
+  template<typename T, typename TagT>
+  void StreamingMerger<T, TagT>::process_topological_merge() {
+    Timer       topological_merge_timer;
+    std::string indir = this->temp_disk_index_path + "_with_only_nbrs";
+    std::string outdir = this->final_index_file + "_with_only_nbrs";
+    std::string index_fname(outdir);
+    int         fd = open(index_fname.c_str(), O_WRONLY);
+
+    std::vector<char> data_buf(merge_nodes.size() * (this->range + 1) *
+                               sizeof(int));
+    std::cout << "Start process_topological_merge" << std::endl;
+#pragma omp parallel for schedule(dynamic, 16) num_threads(MAX_N_THREADS)
+    for (size_t i = 0; i < merge_nodes.size(); i++) {
+      DiskNode<T> &node = merge_nodes[i];
+      offset_t     off =
+          (1 + (offset_t) node.id / this->topological_nnodes_per_sector) *
+              SECTOR_LEN +
+          (offset_t) (node.id % this->topological_nnodes_per_sector) *
+              this->topological_size_per_node;
+      memcpy(data_buf.data() + i * (size_t) (this->range + 1) * sizeof(int),
+             &node.nnbrs, sizeof(int));
+      memcpy(data_buf.data() + i * (size_t) (this->range + 1) * sizeof(int) +
+                 sizeof(int),
+             &node.nbrs, sizeof(int) * this->range);
+      pwrite(fd, data_buf.data() + i * (size_t) (this->range + 1) * sizeof(int),
+             (this->range + 1) * sizeof(int), off);
+    }
+
+    double e2e_time =
+        ((double) topological_merge_timer.elapsed()) / (1000000.0);
+    diskann::cout << "Processed Topological_Merge in " << e2e_time << " s."
+                  << std::endl;
   }
 
   // template class instantiations

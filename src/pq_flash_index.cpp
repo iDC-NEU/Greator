@@ -34,7 +34,6 @@
 #include "linux_aligned_file_reader.h"
 #endif
 
-#define SECTOR_LEN 4096
 #define IO_LIMIT __INT_MAX__
 
 #define READ_U64(stream, val) stream.read((char *) &val, sizeof(_u64))
@@ -42,7 +41,7 @@
 #define READ_UNSIGNED(stream, val) stream.read((char *) &val, sizeof(unsigned))
 
 // sector # on disk where node_id is present
-#define NODE_SECTOR_NO(node_id) (((_u64)(node_id)) / nnodes_per_sector + 1)
+#define NODE_SECTOR_NO(node_id) (((_u64) (node_id)) / nnodes_per_sector + 1)
 
 // obtains region of sector containing node
 #define OFFSET_TO_NODE(sector_buf, node_id) \
@@ -59,6 +58,9 @@
 
 // returns region of `node_buf` containing [COORD(T)]
 #define OFFSET_TO_NODE_COORDS(node_buf) (T *) (node_buf)
+
+#define R 34
+using offset_t = uint64_t;
 
 namespace {
   void aggregate_coords(const unsigned *ids, const _u64 n_ids,
@@ -96,6 +98,28 @@ namespace diskann {
     this->nnbrs = *nhood;
     this->nbrs = nhood + 1;
   }
+  template<typename T>
+  DiskNode<T>::DiskNode(uint32_t id, uint32_t nnbrs, uint32_t *nbrs) : id(id) {
+    this->coords = nullptr;
+    this->nnbrs = nnbrs;
+    this->nbrs = new uint32_t[R];
+    for (size_t i = 0; i < this->nnbrs; i++) {
+      this->nbrs[i] = nbrs[i];
+    }
+    for (size_t i = this->nnbrs; i < R; i++) {
+      this->nbrs[i] = 0;
+    }
+  }
+  template<typename T>
+  DiskNode<T>::DiskNode(uint32_t id, uint32_t nnbrs) : id(id) {
+    this->coords = nullptr;
+    this->nnbrs = nnbrs;
+    this->nbrs = new uint32_t[R];
+
+    for (size_t i = 0; i < R; i++) {
+      this->nbrs[i] = 0;
+    }
+  }
 
   // structs for DiskNode
   template struct DiskNode<float>;
@@ -130,6 +154,8 @@ namespace diskann {
 
   template<typename T, typename TagT>
   PQFlashIndex<T, TagT>::~PQFlashIndex() {
+    Timer start;
+
 #ifndef EXEC_ENV_OLS
     if (data != nullptr) {
       delete[] data;
@@ -179,7 +205,7 @@ namespace diskann {
 #pragma omp critical
       {
         this->reader->register_thread();
-        IOContext &     ctx = this->reader->get_ctx();
+        IOContext      &ctx = this->reader->get_ctx();
         QueryScratch<T> scratch;
         _u64 coord_alloc_size = ROUND_UP(MAX_N_CMPS * this->aligned_dim, 256);
         diskann::alloc_aligned((void **) &scratch.coord_scratch,
@@ -265,7 +291,7 @@ namespace diskann {
       std::vector<std::pair<_u32, char *>> nhoods;
       for (_u64 node_idx = start_idx; node_idx < end_idx; node_idx++) {
         AlignedRead read;
-        char *      buf = nullptr;
+        char       *buf = nullptr;
         alloc_aligned((void **) &buf, SECTOR_LEN, SECTOR_LEN);
         nhoods.push_back(std::make_pair(node_list[node_idx], buf));
         read.len = SECTOR_LEN;
@@ -279,8 +305,8 @@ namespace diskann {
       _u64 node_idx = start_idx;
       for (auto &nhood : nhoods) {
         char *node_buf = OFFSET_TO_NODE(nhood.second, nhood.first);
-        T *   node_coords = OFFSET_TO_NODE_COORDS(node_buf);
-        T *   cached_coords = coord_cache_buf + node_idx * aligned_dim;
+        T    *node_coords = OFFSET_TO_NODE_COORDS(node_buf);
+        T    *cached_coords = coord_cache_buf + node_idx * aligned_dim;
         memcpy(cached_coords, node_coords, data_dim * sizeof(T));
         coord_cache.insert(std::make_pair(nhood.first, cached_coords));
 
@@ -325,7 +351,7 @@ namespace diskann {
     }
 
     _u64 sample_num, sample_dim, sample_aligned_dim;
-    T *  samples;
+    T   *samples;
 
 #ifdef EXEC_ENV_OLS
     if (files.fileExists(sample_bin)) {
@@ -379,7 +405,7 @@ namespace diskann {
     node_list.clear();
 
     // Do not cache more than 10% of the nodes in the index
-    _u64 tenp_nodes = (_u64)(std::round(this->num_points * 0.1));
+    _u64 tenp_nodes = (_u64) (std::round(this->num_points * 0.1));
     if (num_nodes_to_cache > tenp_nodes) {
       diskann::cout << "Reducing nodes to cache from: " << num_nodes_to_cache
                     << " to: " << tenp_nodes
@@ -458,7 +484,7 @@ namespace diskann {
         // process each nhood buf
         for (auto &nhood : nhoods) {
           // insert node coord into coord_cache
-          char *    node_buf = OFFSET_TO_NODE(nhood.second, nhood.first);
+          char     *node_buf = OFFSET_TO_NODE(nhood.second, nhood.first);
           unsigned *node_nhood = OFFSET_TO_NODE_NHOOD(node_buf);
           _u64      nnbrs = (_u64) *node_nhood;
           unsigned *nbrs = node_nhood + 1;
@@ -589,7 +615,7 @@ namespace diskann {
     // this->setup_thread_data(num_threads);
     this->max_nthreads = num_threads;
 
-    char *                   bytes = getHeaderBytes();
+    char                    *bytes = getHeaderBytes();
     ContentBuf               buf(bytes, HEADER_SIZE);
     std::basic_istream<char> index_metadata(&buf);
 
@@ -600,11 +626,11 @@ namespace diskann {
     size_t tags_offset = 0;
     size_t pq_pivots_offset = 0;
     size_t pq_vectors_offset = 0;
-    _u64   disk_nnodes;
-    _u64   disk_ndims;
+
     size_t medoid_id_on_file;
     _u64   file_frozen_id;
 
+    uint32_t pagesize = 0;
     if (new_index_format) {
       _u32 nr, nc;
 
@@ -620,7 +646,9 @@ namespace diskann {
       data_dim = disk_ndims;
       max_degree =
           ((max_node_len - data_dim * sizeof(T)) / sizeof(unsigned)) - 1;
-
+      pagesize = (disk_nnodes + nnodes_per_sector - 1) / (nnodes_per_sector);
+      std::cout << "Pagesize: " << pagesize << " " << disk_nnodes << " "
+                << nnodes_per_sector << std::endl;
       diskann::cout << "Disk-Index File Meta-data: "
                     << "# nodes per sector: " << nnodes_per_sector
                     << ", max node len (bytes): " << max_node_len
@@ -667,7 +695,12 @@ namespace diskann {
       diskann::cout << "# nodes per sector: " << nnodes_per_sector;
       diskann::cout << ", max node len (bytes): " << max_node_len;
       diskann::cout << ", max node degree: " << max_degree << std::endl;
+      pagesize = (disk_nnodes + nnodes_per_sector - 1) / (nnodes_per_sector);
+      std::cout << "Pagesize: " << pagesize << std::endl;
     }
+
+    // init_pagemutex
+    this->pagemutex.resize(pagesize + 1);
 
 #ifdef EXEC_ENV_OLS
     delete[] bytes;
@@ -730,7 +763,7 @@ namespace diskann {
 #ifndef EXEC_ENV_OLS
     // open AlignedFileReader handle to index_file
     std::string index_fname(disk_index_file);
-    reader->open(index_fname, false, false);
+    reader->open(index_fname, true, false);
 #endif
     this->setup_thread_data(num_threads);
     this->max_nthreads = num_threads;
@@ -789,7 +822,7 @@ namespace diskann {
     } else {
       num_medoids = 1;
       medoids = new uint32_t[1];
-      medoids[0] = (_u32)(medoid_id_on_file);
+      medoids[0] = (_u32) (medoid_id_on_file);
       use_medoids_data_as_centroids();
     }
 
@@ -882,6 +915,7 @@ namespace diskann {
     this->disk_iterate_to_fixed_point(query, (_u32) l_search, (_u32) beam_width,
                                       expanded_nodes_info, &coord_map, stats);
     // fill in `indices`, `distances`
+
     _u64 res_count = 0;
     for (uint32_t i = 0;
          i < l_search && res_count < k_search && i < expanded_nodes_info.size();
@@ -936,9 +970,9 @@ namespace diskann {
   template<typename T, typename TagT>
   void PQFlashIndex<T, TagT>::disk_iterate_to_fixed_point(
       const T *query1, const uint32_t l_search, const uint32_t beam_width,
-      std::vector<Neighbor> &        expanded_nodes_info,
+      std::vector<Neighbor>         &expanded_nodes_info,
       tsl::robin_map<uint32_t, T *> *coord_map, QueryStats *stats,
-      ThreadData<T> *           passthrough_data,
+      ThreadData<T>            *passthrough_data,
       tsl::robin_set<uint32_t> *exclude_nodes) {
     // only pull from sector scratch if ThreadData<T> not passed as arg
     auto          diskSearchBegin = std::chrono::high_resolution_clock::now();
@@ -949,11 +983,13 @@ namespace diskann {
         this->thread_data.wait_for_push_notify();
         data = this->thread_data.pop();
       }
+
     } else {
       data = *passthrough_data;
     }
 
     if (data_is_normalized) {
+      std::cout << "data_is_normalized start" << std::endl;
       // Data has been normalized. Normalize search vector too.
       float norm = diskann::compute_l2_norm(query1, this->data_dim);
       for (uint32_t i = 0; i < this->data_dim; i++) {
@@ -963,13 +999,15 @@ namespace diskann {
         data.scratch.aligned_query_T[i] =
             (T) data.scratch.aligned_query_float[i];
       }
+      std::cout << "data_is_normalized end" << std::endl;
     } else {
       for (uint32_t i = 0; i < this->data_dim; i++) {
         data.scratch.aligned_query_float[i] = query1[i];
       }
+
       memcpy(data.scratch.aligned_query_T, query1, this->data_dim * sizeof(T));
     }
-    const T *    query = data.scratch.aligned_query_T;
+    const T     *query = data.scratch.aligned_query_T;
     const float *query_float = data.scratch.aligned_query_float;
 
     IOContext &ctx = data.ctx;
@@ -983,7 +1021,7 @@ namespace diskann {
     _mm_prefetch((char *) scratch, _MM_HINT_T0);
 
     // pointers to buffers for data
-    T *   data_buf = query_scratch->coord_scratch;
+    T    *data_buf = query_scratch->coord_scratch;
     _u64 &data_buf_idx = query_scratch->coord_idx;
     _mm_prefetch((char *) data_buf, _MM_HINT_T1);
 
@@ -997,7 +1035,7 @@ namespace diskann {
 
     // query <-> neighbor list
     float *dist_scratch = query_scratch->aligned_dist_scratch;
-    _u8 *  pq_coord_scratch = query_scratch->aligned_pq_coord_scratch;
+    _u8   *pq_coord_scratch = query_scratch->aligned_pq_coord_scratch;
 
     // lambda to batch compute query<-> node distances in PQ space
     auto compute_dists = [this, pq_coord_scratch, pq_dists](const unsigned *ids,
@@ -1009,14 +1047,19 @@ namespace diskann {
                        dists_out);
     };
 
-    Timer                 query_timer, io_timer, cpu_timer;
+    Timer query_timer, io_timer, cpu_timer;
+
     std::vector<Neighbor> retset;
+
     retset.resize(l_search + 1);
+
     tsl::robin_set<_u64> visited(4096);
+    // tsl::robin_set<_u64> visited;
 
     // re-naming `expanded_nodes_info` to not change rest of the code
     std::vector<Neighbor> &full_retset = expanded_nodes_info;
     full_retset.reserve(4096);
+
     _u32                        best_medoid = 0;
     float                       best_dist = (std::numeric_limits<float>::max)();
     std::vector<SimpleNeighbor> medoid_dists;
@@ -1029,13 +1072,11 @@ namespace diskann {
         best_dist = cur_expanded_dist;
       }
     }
-
     compute_dists(&best_medoid, 1, dist_scratch);
     retset[0].id = best_medoid;
     retset[0].distance = dist_scratch[0];
     retset[0].flag = true;
     visited.insert(best_medoid);
-
     unsigned cur_list_size = 1;
 
     std::sort(retset.begin(), retset.begin() + cur_list_size);
@@ -1092,6 +1133,8 @@ namespace diskann {
       if (!frontier.empty()) {
         if (stats != nullptr)
           stats->n_hops++;
+
+        std::vector<uint32_t> lock_pageid;
         for (_u64 i = 0; i < frontier.size(); i++) {
           auto                    id = frontier[i];
           std::pair<_u32, char *> fnhood;
@@ -1099,9 +1142,12 @@ namespace diskann {
           fnhood.second = sector_scratch + sector_scratch_idx * SECTOR_LEN;
           sector_scratch_idx++;
           frontier_nhoods.push_back(fnhood);
+          uint32_t pageid = 1 + id / this->nnodes_per_sector;
+          lock_pageid.push_back(pageid);
           frontier_read_reqs.emplace_back(
               NODE_SECTOR_NO(((size_t) id)) * SECTOR_LEN, SECTOR_LEN,
               fnhood.second);
+
           if (stats != nullptr) {
             stats->n_4k++;
             stats->n_ios++;
@@ -1109,11 +1155,21 @@ namespace diskann {
           num_ios++;
         }
         io_timer.reset();
+
+        for (auto &pageid : lock_pageid) {
+          CASRWLock *pmutex = &pagemutex[pageid];
+          pmutex->ReadLock();
+        }
 #ifdef USE_BING_INFRA
         reader->read(frontier_read_reqs, ctx, true);  // async reader windows.
 #else
         reader->read(frontier_read_reqs, ctx, false);  // synchronous IO linux
 #endif
+
+        for (auto &pageid : lock_pageid) {
+          CASRWLock *pmutex = &pagemutex[pageid];
+          pmutex->ReadUnLock();
+        }
         if (stats != nullptr) {
           stats->io_us += (double) io_timer.elapsed();
         }
@@ -1122,8 +1178,8 @@ namespace diskann {
       // process cached nhoods
       for (auto &cached_nhood : cached_nhoods) {
         auto global_cache_iter = coord_cache.find(cached_nhood.first);
-        T *  node_fp_coords = global_cache_iter->second;
-        T *  node_fp_coords_copy = data_buf + (data_buf_idx * aligned_dim);
+        T   *node_fp_coords = global_cache_iter->second;
+        T   *node_fp_coords_copy = data_buf + (data_buf_idx * aligned_dim);
         data_buf_idx++;
         memcpy(node_fp_coords_copy, node_fp_coords, data_dim * sizeof(T));
         float cur_expanded_dist = dist_cmp->compare(query, node_fp_coords_copy,
@@ -1170,8 +1226,8 @@ namespace diskann {
               continue;
             Neighbor nn(id, dist, true);
             auto     r = InsertIntoPool(
-                retset.data(), cur_list_size,
-                nn);  // Return position in sorted list where nn inserted.
+                    retset.data(), cur_list_size,
+                    nn);  // Return position in sorted list where nn inserted.
             if (cur_list_size < l_search)
               ++cur_list_size;
             if (r < nk)
@@ -1196,13 +1252,14 @@ namespace diskann {
         auto &frontier_nhood = frontier_nhoods[completedIndex];
         (*ctx.m_pRequestsStatus)[completedIndex] = IOContext::PROCESS_COMPLETE;
 #else
+
       for (auto &frontier_nhood : frontier_nhoods) {
 #endif
         char *node_disk_buf =
             OFFSET_TO_NODE(frontier_nhood.second, frontier_nhood.first);
         unsigned *node_buf = OFFSET_TO_NODE_NHOOD(node_disk_buf);
-        _u64      nnbrs = (_u64)(*node_buf);
-        T *       node_fp_coords = OFFSET_TO_NODE_COORDS(node_disk_buf);
+        _u64      nnbrs = (_u64) (*node_buf);
+        T        *node_fp_coords = OFFSET_TO_NODE_COORDS(node_disk_buf);
         assert(data_buf_idx < MAX_N_CMPS);
 
         T *node_fp_coords_copy = data_buf + (data_buf_idx * aligned_dim);
@@ -1252,8 +1309,8 @@ namespace diskann {
               continue;
             Neighbor nn(id, dist, true);
             auto     r = InsertIntoPool(
-                retset.data(), cur_list_size,
-                nn);  // Return position in sorted list where nn inserted.
+                    retset.data(), cur_list_size,
+                    nn);  // Return position in sorted list where nn inserted.
             if (cur_list_size < l_search)
               ++cur_list_size;
             if (r < nk)
@@ -1283,10 +1340,11 @@ namespace diskann {
             std::chrono::duration_cast<std::chrono::milliseconds>(
                 diskSearchEnd - diskSearchBegin)
                 .count();
-        if (elapsedSeconds >= stats->n_current_used)
-          break;
+        // if (elapsedSeconds >= stats->n_current_used)
+        //   break;
       }
     }
+
     // re-sort by distance
     std::sort(full_retset.begin(), full_retset.end(),
               [](const Neighbor &left, const Neighbor &right) {
@@ -1306,7 +1364,7 @@ namespace diskann {
 
   template<typename T, typename TagT>
   void PQFlashIndex<T, TagT>::compute_pq_dists(const T *query, const _u32 *ids,
-                                               float *    fp_dists,
+                                               float     *fp_dists,
                                                const _u32 count) {
     // TODO (perf) :: more efficient impl without using populate_chunk_distances
     ThreadData<T> data = this->thread_data.pop();
@@ -1346,10 +1404,10 @@ namespace diskann {
 
   template<typename T, typename TagT>
   void PQFlashIndex<T, TagT>::compute_pq_dists(const _u32 src, const _u32 *ids,
-                                               float *    fp_dists,
+                                               float     *fp_dists,
                                                const _u32 count,
-                                               uint8_t *  aligned_scratch) {
-    const _u8 *   src_ptr = this->data + (this->n_chunks * src);
+                                               uint8_t   *aligned_scratch) {
+    const _u8    *src_ptr = this->data + (this->n_chunks * src);
     ThreadData<T> data;
     bool          popped = false;
     if (aligned_scratch == nullptr) {
@@ -1380,9 +1438,11 @@ namespace diskann {
 
   template<typename T, typename TagT>
   _u32 PQFlashIndex<T, TagT>::merge_read(std::vector<DiskNode<T>> &disk_nodes,
-                                         _u32 &                    start_id,
+                                         _u32                     &start_id,
                                          const _u32                sector_count,
-                                         char *                    scratch) {
+                                         char                     *scratch) {
+    // std::cout << "start_id: " << start_id<< " nnodes_per_sector: " <<
+    // this->nnodes_per_sector << std::endl;
     assert(start_id % this->nnodes_per_sector == 0);
     assert(IS_ALIGNED(scratch, SECTOR_LEN));
     disk_nodes.clear();
@@ -1394,7 +1454,7 @@ namespace diskann {
       data = this->thread_data.pop();
     }
 
-    IOContext &              ctx = data.ctx;
+    IOContext               &ctx = data.ctx;
     std::vector<AlignedRead> read_req(1);
     _u64 start_off = NODE_SECTOR_NO(((size_t) start_id)) * SECTOR_LEN;
     _u64 n_sectors = ROUND_UP(this->num_points - start_id, nnodes_per_sector) /
@@ -1404,10 +1464,11 @@ namespace diskann {
     read_req[0].buf = scratch;
     read_req[0].len = n_sectors * SECTOR_LEN;
     read_req[0].offset = start_off;
-
+    CASRWLock *pmutex = &pagemutex[(1 + start_id / this->nnodes_per_sector)];
+    pmutex->ReadLock();
     // big sequential read
     this->reader->read(read_req, ctx);
-
+    pmutex->ReadUnLock();
     // create disk nodes
     _u32 cur_node_id = start_id;
     for (_u32 i = 0; i < n_sectors; i++) {
@@ -1415,6 +1476,7 @@ namespace diskann {
       for (_u32 j = 0; j < nnodes_per_sector && cur_node_id < this->num_points;
            j++) {
         char *node_buf = OFFSET_TO_NODE(sector_buf, cur_node_id);
+
         disk_nodes.emplace_back(cur_node_id, OFFSET_TO_NODE_COORDS(node_buf),
                                 OFFSET_TO_NODE_NHOOD(node_buf));
         cur_node_id++;
@@ -1428,12 +1490,179 @@ namespace diskann {
     // return cur_node_id as starting point for next iteration
     return cur_node_id;
   }
+  template<typename T, typename TagT>
+  void PQFlashIndex<T, TagT>::merge_write_through_diff_pages(
+      std::vector<_u32> &start_id, char *scratch) {
+    assert(IS_ALIGNED(scratch, SECTOR_LEN));
+    assert(scratch != nullptr);
 
+    ThreadData<T> data = this->thread_data.pop();
+    while (data.scratch.sector_scratch == nullptr) {
+      this->thread_data.wait_for_push_notify();
+      data = this->thread_data.pop();
+    }
+
+    IOContext               &ctx = data.ctx;
+    std::vector<AlignedRead> write_req(start_id.size());
+
+    int chunk_size = 1;
+    // > (write_req.size() / 10) ? 1 : (write_req.size() / 10);
+#pragma omp parallel for schedule(dynamic, chunk_size) num_threads(10)
+    for (int i = 0; i < write_req.size(); i++) {
+      _u64 start_off = NODE_SECTOR_NO(((size_t) start_id[i])) * SECTOR_LEN;
+      write_req[i].buf = scratch + i * SECTOR_LEN;
+      write_req[i].len = SECTOR_LEN;
+      write_req[i].offset = start_off;
+      CASRWLock *pmutex =
+          &pagemutex[(1 + start_id[i] / this->nnodes_per_sector)];
+      pmutex->WriteLock();
+    }
+
+    // big sequential read
+    this->reader->write(write_req, ctx);
+
+#pragma omp parallel for schedule(dynamic, chunk_size) num_threads(10)
+    for (int i = 0; i < write_req.size(); i++) {
+      CASRWLock *pmutex =
+          &pagemutex[(1 + start_id[i] / this->nnodes_per_sector)];
+      pmutex->WriteUnlock();
+    }
+
+    // return scratch
+    this->thread_data.push(data);
+    this->thread_data.push_notify_all();
+  }
+  template<typename T, typename TagT>
+  void PQFlashIndex<T, TagT>::merge_read_through_diff_pages(
+      std::vector<std::vector<DiskNode<T>>> &disk_nodes, TagT *disk_tags,
+      tsl::robin_set<uint32_t> disk_deleted_ids, std::vector<_u32> &start_id,
+      char *scratch, bool is_patch) {
+    assert(IS_ALIGNED(scratch, SECTOR_LEN));
+    disk_nodes.clear();
+    assert(scratch != nullptr);
+
+    ThreadData<T> data = this->thread_data.pop();
+    while (data.scratch.sector_scratch == nullptr) {
+      this->thread_data.wait_for_push_notify();
+      data = this->thread_data.pop();
+    }
+
+    IOContext               &ctx = data.ctx;
+    std::vector<AlignedRead> read_req(start_id.size());
+    int                      chunk_size = 1;
+    // > (read_req.size() / 10) ? 1 : (read_req.size() / 10);
+#pragma omp parallel for schedule(dynamic, chunk_size) num_threads(10)
+    for (size_t i = 0; i < read_req.size(); i++) {
+      _u64 start_off = NODE_SECTOR_NO(((size_t) start_id[i])) * SECTOR_LEN;
+      read_req[i].buf = scratch + (size_t) (i * SECTOR_LEN);
+      read_req[i].len = SECTOR_LEN;
+      read_req[i].offset = start_off;
+      CASRWLock *pmutex =
+          &pagemutex[(1 + start_id[i] / this->nnodes_per_sector)];
+      pmutex->ReadLock();
+    }
+
+    // big sequential read
+    this->reader->read(read_req, ctx);
+
+#pragma omp parallel for schedule(dynamic, chunk_size) num_threads(10)
+    for (size_t i = 0; i < read_req.size(); i++) {
+      CASRWLock *pmutex =
+          &pagemutex[(1 + start_id[i] / this->nnodes_per_sector)];
+      pmutex->ReadUnLock();
+    }
+
+    // create disk nodes
+    for (size_t i = 0; i < read_req.size(); i++) {
+      size_t                   cur_node_id = start_id[i];
+      char                    *sector_buf = scratch + (size_t) (i * SECTOR_LEN);
+      std::vector<DiskNode<T>> nodes;
+      for (_u32 j = 0; j < nnodes_per_sector && cur_node_id < this->num_points;
+           j++) {
+        char *node_buf = OFFSET_TO_NODE(sector_buf, cur_node_id);
+
+        nodes.emplace_back(cur_node_id, OFFSET_TO_NODE_COORDS(node_buf),
+                           OFFSET_TO_NODE_NHOOD(node_buf));
+
+        if (!is_patch &&
+            ((disk_deleted_ids.find(cur_node_id) != disk_deleted_ids.end()) ||
+             disk_tags[cur_node_id] == std::numeric_limits<uint32_t>::max())) {
+          nodes[nodes.size() - 1].nnbrs = 0;
+        }
+        cur_node_id++;
+      }
+      assert(nodes.size() != 0);
+      disk_nodes.push_back(nodes);
+      nodes.clear();
+    }
+    assert(disk_nodes.size() == start_id.size());
+    // return scratch
+    this->thread_data.push(data);
+    this->thread_data.push_notify_all();
+  }
+  template<typename T, typename TagT>
+  _u32 PQFlashIndex<T, TagT>::merge_read_through_disk_deleted_ids(
+      std::vector<DiskNode<T>> &disk_nodes, TagT *disk_tags,
+      tsl::robin_set<uint32_t> disk_deleted_ids, _u32 &start_id,
+      const _u32 sector_count, char *scratch) {
+    assert(start_id % this->nnodes_per_sector == 0);
+    assert(IS_ALIGNED(scratch, SECTOR_LEN));
+    disk_nodes.clear();
+    assert(scratch != nullptr);
+
+    ThreadData<T> data = this->thread_data.pop();
+    while (data.scratch.sector_scratch == nullptr) {
+      this->thread_data.wait_for_push_notify();
+      data = this->thread_data.pop();
+    }
+
+    IOContext               &ctx = data.ctx;
+    std::vector<AlignedRead> read_req(1);
+    _u64 start_off = NODE_SECTOR_NO(((size_t) start_id)) * SECTOR_LEN;
+    _u64 n_sectors = ROUND_UP(this->num_points - start_id, nnodes_per_sector) /
+                     nnodes_per_sector;
+    n_sectors = std::min(n_sectors, (uint64_t) sector_count);
+    assert(n_sectors > 0);
+    read_req[0].buf = scratch;
+    read_req[0].len = n_sectors * SECTOR_LEN;
+    read_req[0].offset = start_off;
+    CASRWLock *pmutex = &pagemutex[(1 + start_id / this->nnodes_per_sector)];
+    pmutex->ReadLock();
+    // big sequential read
+    this->reader->read(read_req, ctx);
+    pmutex->ReadUnLock();
+
+    // create disk nodes
+    _u32 cur_node_id = start_id;
+    for (_u32 i = 0; i < n_sectors; i++) {
+      char *sector_buf = scratch + (i * SECTOR_LEN);
+      for (_u32 j = 0; j < nnodes_per_sector && cur_node_id < this->num_points;
+           j++) {
+        char *node_buf = OFFSET_TO_NODE(sector_buf, cur_node_id);
+
+        disk_nodes.emplace_back(cur_node_id, OFFSET_TO_NODE_COORDS(node_buf),
+                                OFFSET_TO_NODE_NHOOD(node_buf));
+
+        if ((disk_deleted_ids.find(cur_node_id) != disk_deleted_ids.end()) ||
+            disk_tags[cur_node_id] == std::numeric_limits<uint32_t>::max()) {
+          disk_nodes[disk_nodes.size() - 1].nnbrs = 0;
+        }
+        cur_node_id++;
+      }
+    }
+
+    // return scratch
+    this->thread_data.push(data);
+    this->thread_data.push_notify_all();
+
+    // return cur_node_id as starting point for next iteration
+    return cur_node_id;
+  }
   template<typename T, typename TagT>
   void PQFlashIndex<T, TagT>::scan_deleted_nodes(
       const tsl::robin_set<uint32_t> &delete_set,
       std::vector<DiskNode<T>> &deleted_nodes, char *buf, char *backing_buf,
-      const uint32_t sectors_per_scan) {
+      const uint32_t sectors_per_scan, bool id_map) {
     assert(buf != nullptr);
     assert(IS_ALIGNED(buf, 4096));
     assert(IS_ALIGNED(backing_buf, 32));
@@ -1453,67 +1682,108 @@ namespace diskann {
 
     IOContext &ctx = data.ctx;
 
-    uint32_t n_scanned = 0;
-    uint32_t base_offset = (uint32_t)(NODE_SECTOR_NO(0) * SECTOR_LEN);
-    std::vector<AlignedRead> reads(1);
-    reads[0].buf = buf;
-    reads[0].len = sectors_per_scan * SECTOR_LEN;
-    reads[0].offset = base_offset;
-    while (n_scanned < this->num_points) {
-      memset(buf, 0, sectors_per_scan * SECTOR_LEN);
-      assert(this->reader);
+    if (!id_map) {
+      uint32_t n_scanned = 0;
+      uint32_t base_offset = (uint32_t) (NODE_SECTOR_NO(0) * SECTOR_LEN);
+      std::vector<AlignedRead> reads(1);
+      reads[0].buf = buf;
+      reads[0].len = sectors_per_scan * SECTOR_LEN;
+      reads[0].offset = base_offset;
 
-      this->reader->read(reads, ctx);
-      reads[0].offset += reads[0].len;
+      // std::cout << "scan_nodes:\n";
 
-      // scan each sector
-      for (uint32_t i = 0; i < sectors_per_scan && n_scanned < this->num_points;
-           i++) {
-        char *sector_buf = buf + i * SECTOR_LEN;
-        // scan each node
-        for (uint32_t j = 0;
-             j < nnodes_per_sector && n_scanned < this->num_points; j++) {
-          char *node_buf = OFFSET_TO_NODE(sector_buf, n_scanned);
-          // if in delete_set, add to deleted_nodes
-          if (delete_set.find(n_scanned) != delete_set.end()) {
-            char *buf_start =
-                backing_buf + (backing_buf_idx * backing_buf_unit_size);
-            backing_buf_idx++;
-            memcpy(buf_start, node_buf, max_node_len);
-            // create disk node object from backing buf instead of `buf`
-            DiskNode<T> node(n_scanned, OFFSET_TO_NODE_COORDS(buf_start),
-                             OFFSET_TO_NODE_NHOOD(buf_start));
-            /*            if ((!(node.nnbrs > 0)) ||
-                            ((n_scanned >= 325000) && (n_scanned < 325100)) ||
-                            ((n_scanned >= 300000) && (n_scanned < 300100))) {
-                          std::cout << "#neighbors of " << n_scanned << "   :  "
-                                    << node.nnbrs << std::endl;
-                          std::cout << NODE_SECTOR_NO(n_scanned) << std::endl;
-                          std::cout << uint32_t(node_buf - sector_buf) <<
-               std::endl; for (size_t i = 0; i < 128; i++) { std::cout <<
-               *(OFFSET_TO_NODE_COORDS(buf_start) + i)
-                                      << "  ;    ";
-                          }
-                          std::cout << std::endl;
-                          if (((n_scanned % 5) != 0) && (node.nnbrs == 0)) {
-                            std::cout << "Previous vector : " << std::endl;
-                            std::cout << NODE_SECTOR_NO(n_scanned - 1) <<
-               std::endl; char *buf_prev = OFFSET_TO_NODE(sector_buf, n_scanned
-               - 1); std::cout << uint32_t(buf_prev - sector_buf) << std::endl;
-                            for (size_t i = 0; i < 128; i++) {
-                              std::cout << *(OFFSET_TO_NODE_COORDS(buf_prev) +
-               i)
-                                        << "  ;    ";
-                            }
-                            std::cout << std::endl;
-                          }
-                        }
-                        */
-            assert(node.nnbrs < 512);
-            assert(node.nnbrs > 0);
-            deleted_nodes.push_back(node);
+      while (n_scanned < this->num_points) {
+        memset(buf, 0, sectors_per_scan * SECTOR_LEN);
+        assert(this->reader);
+
+        this->reader->read(reads, ctx);
+        reads[0].offset += reads[0].len;
+
+        // scan each sector
+        for (uint32_t i = 0;
+             i < sectors_per_scan && n_scanned < this->num_points; i++) {
+          char *sector_buf = buf + i * SECTOR_LEN;
+          // scan each node
+          for (uint32_t j = 0;
+               j < nnodes_per_sector && n_scanned < this->num_points; j++) {
+            char *node_buf = OFFSET_TO_NODE(sector_buf, n_scanned);
+            // if in delete_set, add to deleted_nodes
+            if (delete_set.find(n_scanned) != delete_set.end()) {
+              char *buf_start =
+                  backing_buf + (backing_buf_idx * backing_buf_unit_size);
+              backing_buf_idx++;
+              memcpy(buf_start, node_buf, max_node_len);
+              // create disk node object from backing buf instead of `buf`
+              DiskNode<T> node(n_scanned, OFFSET_TO_NODE_COORDS(buf_start),
+                               OFFSET_TO_NODE_NHOOD(buf_start));
+
+              // std::cout << "delete_id: " << n_scanned << " " << node.nnbrs
+              //           << " neighborhoods: ";
+              // for (int kk = 0; kk < node.nnbrs; kk++) {
+              //   std::cout << node.nbrs[kk] << " ";
+              // }
+              // std::cout << "\n";
+              assert(node.nnbrs < 512);
+              assert(node.nnbrs >= 0);
+              deleted_nodes.push_back(node);
+            }
+            n_scanned++;
           }
-          n_scanned++;
+        }
+      }
+    } else {
+      tsl::robin_map<uint32_t, std::vector<uint32_t>> dmap;
+      for (auto dnode : delete_set) {
+        uint32_t sector_id =
+            1 + dnode / (sectors_per_scan * this->nnodes_per_sector);
+
+        // if (dmap.find(sector_id) == dmap.end())
+        //   dmap[sector_id] = std::vector<int>();
+        dmap[sector_id].push_back(dnode);
+      }
+
+      // std::cout << "scan_nodes:\n";
+
+      for (const auto &pair : dmap) {
+        uint32_t              sector_id = pair.first;
+        std::vector<uint32_t> dvec = pair.second;
+
+        offset_t sector_offset = sector_id * sectors_per_scan * SECTOR_LEN;
+
+        uint32_t                 n_scanned = 0;
+        std::vector<AlignedRead> reads(1);
+        reads[0].buf = buf;
+        reads[0].len = sectors_per_scan * SECTOR_LEN;
+        reads[0].offset = sector_offset;
+
+        CASRWLock *pmutex = &pagemutex[sector_id];
+        pmutex->ReadLock();
+
+        this->reader->read(reads, ctx);
+        pmutex->ReadUnLock();
+        for (auto &idx : dvec) {
+          uint32_t offset_in_sector =
+              idx % (sectors_per_scan * this->nnodes_per_sector);
+
+          char *node_buf = OFFSET_TO_NODE(buf, offset_in_sector);
+          char *buf_start =
+              backing_buf + (backing_buf_idx * backing_buf_unit_size);
+          backing_buf_idx++;
+          memcpy(buf_start, node_buf, max_node_len);
+          // create disk node object from backing buf instead of `buf`
+          DiskNode<T> node(idx, OFFSET_TO_NODE_COORDS(buf_start),
+                           OFFSET_TO_NODE_NHOOD(buf_start));
+
+          // std::cout << "delete_id: " << idx << " " << node.nnbrs
+          //           << " neighborhoods: ";
+          // for (int kk = 0; kk < node.nnbrs; kk++) {
+          //   std::cout << node.nbrs[kk] << " ";
+          // }
+          // std::cout << "\n";
+
+          assert(node.nnbrs < 512);
+          assert(node.nnbrs >= 0);
+          deleted_nodes.push_back(node);
         }
       }
     }
@@ -1670,7 +1940,7 @@ namespace diskann {
 
   template<typename T, typename TagT>
   int PQFlashIndex<T, TagT>::get_vector_by_tag(const TagT &tag,
-                                               T *         vector_coords) {
+                                               T          *vector_coords) {
     if (!enable_tags) {
       diskann::cout << "Tags are disabled, cannot retrieve vector" << std::endl;
       return -1;
@@ -1707,7 +1977,7 @@ namespace diskann {
   template<typename T, typename TagT>
   char *PQFlashIndex<T, TagT>::getHeaderBytes() {
     this->reader->register_thread();
-    IOContext & ctx = reader->get_ctx();
+    IOContext  &ctx = reader->get_ctx();
     AlignedRead readReq;
     readReq.buf = new char[PQFlashIndex<T>::HEADER_SIZE];
     readReq.len = PQFlashIndex<T>::HEADER_SIZE;

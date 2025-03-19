@@ -62,7 +62,7 @@ namespace diskann {
       unsigned *our_results, unsigned dim_or, unsigned recall_at,
       const tsl::robin_set<unsigned> &active_tags);
 
-  DISKANN_DLLEXPORT void read_idmap(const std::string &    fname,
+  DISKANN_DLLEXPORT void read_idmap(const std::string     &fname,
                                     std::vector<unsigned> &ivecs);
 
 #ifdef EXEC_ENV_OLS
@@ -100,12 +100,12 @@ namespace diskann {
       uint32_t L, uint32_t nthreads, uint32_t start_bw = 2);
 
   template<typename T, typename TagT = uint32_t>
-  DISKANN_DLLEXPORT bool build_disk_index(const char *    dataFilePath,
-                                          const char *    indexFilePath,
-                                          const char *    indexBuildParameters,
+  DISKANN_DLLEXPORT bool build_disk_index(const char     *dataFilePath,
+                                          const char     *indexFilePath,
+                                          const char     *indexBuildParameters,
                                           diskann::Metric _compareMetric,
                                           bool            single_file_index,
-                                          const char *    tag_file = nullptr);
+                                          const char     *tag_file = nullptr);
 
   template<typename T, typename TagT = uint32_t>
   DISKANN_DLLEXPORT void create_disk_layout(

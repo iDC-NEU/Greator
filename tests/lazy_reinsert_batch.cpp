@@ -94,7 +94,7 @@ void search_kernel(
                                      0) /
                          (float) query_num
                   << std::setw(15)
-                  << (float) latency_stats[(_u64)(0.999 * query_num)]
+                  << (float) latency_stats[(_u64) (0.999 * query_num)]
                   << std::setw(12) << recall << std::endl;
   }
   delete[] query_result_dists;

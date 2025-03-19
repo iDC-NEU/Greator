@@ -78,7 +78,7 @@ void compute_l2sq(float *const points_l2sq, const float *const matrix,
 
 void distsq_to_points(
     const size_t dim,
-    float *      dist_matrix,  // Col Major, cols are queries, rows are points
+    float       *dist_matrix,  // Col Major, cols are queries, rows are points
     size_t npoints, const float *const points,
     const float *const points_l2sq,  // points in Col major
     size_t nqueries, const float *const queries,
@@ -140,28 +140,28 @@ void exact_knn(const size_t dim, const size_t k,
       for (_u64 p = 0; p < k; p++)
         point_dist.emplace(
             p, dist_matrix[(ptrdiff_t) p +
-                           (ptrdiff_t)(q - q_b) * (ptrdiff_t) npoints]);
+                           (ptrdiff_t) (q - q_b) * (ptrdiff_t) npoints]);
       for (_u64 p = k; p < npoints; p++) {
         if (point_dist.top().second >
             dist_matrix[(ptrdiff_t) p +
-                        (ptrdiff_t)(q - q_b) * (ptrdiff_t) npoints])
+                        (ptrdiff_t) (q - q_b) * (ptrdiff_t) npoints])
           point_dist.emplace(
               p, dist_matrix[(ptrdiff_t) p +
-                             (ptrdiff_t)(q - q_b) * (ptrdiff_t) npoints]);
+                             (ptrdiff_t) (q - q_b) * (ptrdiff_t) npoints]);
         if (point_dist.size() > k)
           point_dist.pop();
       }
       for (ptrdiff_t l = 0; l < (ptrdiff_t) k; ++l) {
-        closest_points[(ptrdiff_t)(k - 1 - l) + (ptrdiff_t) q * (ptrdiff_t) k] =
-            point_dist.top().first;
-        dist_closest_points[(ptrdiff_t)(k - 1 - l) +
+        closest_points[(ptrdiff_t) (k - 1 - l) +
+                       (ptrdiff_t) q * (ptrdiff_t) k] = point_dist.top().first;
+        dist_closest_points[(ptrdiff_t) (k - 1 - l) +
                             (ptrdiff_t) q * (ptrdiff_t) k] =
             point_dist.top().second;
         point_dist.pop();
       }
       assert(std::is_sorted(
           dist_closest_points + (ptrdiff_t) q * (ptrdiff_t) k,
-          dist_closest_points + (ptrdiff_t)(q + 1) * (ptrdiff_t) k));
+          dist_closest_points + (ptrdiff_t) (q + 1) * (ptrdiff_t) k));
     }
     diskann::cout << "Computed exact k-NN for queries: [" << q_b << "," << q_e
                   << ")" << std::endl;
@@ -185,7 +185,7 @@ inline int get_num_parts(const char *filename) {
   reader.close();
   uint32_t num_parts =
       (npts_i32 % PARTSIZE) == 0
-          ? (_u32)(npts_i32 / PARTSIZE)
+          ? (_u32) (npts_i32 / PARTSIZE)
           : (_u32) std::floor((double) npts_i32 / (double) PARTSIZE) + 1;
   diskann::cout << "Number of parts: " << num_parts << std::endl;
   return num_parts;
@@ -292,13 +292,13 @@ int aux_main(int argc, char **argv) {
 
   std::vector<std::vector<std::pair<uint32_t, float>>> results(nqueries);
 
-  int *  closest_points = new int[nqueries * k];
+  int   *closest_points = new int[nqueries * k];
   float *dist_closest_points = new float[nqueries * k];
 
   for (int p = 0; p < num_parts; p++) {
     size_t start_id = p * PARTSIZE;
     load_bin_as_float<T>(base_file.c_str(), base_data, npoints, dim, p);
-    int *  closest_points_part = new int[nqueries * k];
+    int   *closest_points_part = new int[nqueries * k];
     float *dist_closest_points_part = new float[nqueries * k];
 
     exact_knn(dim, k, closest_points_part, dist_closest_points_part, npoints,
@@ -307,7 +307,7 @@ int aux_main(int argc, char **argv) {
     for (_u64 i = 0; i < nqueries; i++) {
       for (_u64 j = 0; j < k; j++) {
         results[i].push_back(std::make_pair(
-            (uint32_t)(closest_points_part[i * k + j] + start_id),
+            (uint32_t) (closest_points_part[i * k + j] + start_id),
             dist_closest_points_part[i * k + j]));
       }
     }
@@ -329,14 +329,20 @@ int aux_main(int argc, char **argv) {
   if (argc == 7) {
     std::cout << "Loading tags from " << argv[6] << "\n";
     tags = new uint32_t[nqueries * k];
-    uint32_t *  all_tags;
+    uint32_t   *all_tags;
     std::string tag_file = std::string(argv[6]);
     size_t      tag_pts, tag_dim;
     diskann::load_bin(tag_file, all_tags, tag_pts, tag_dim);
 
     diskann::cout << "Loaded tags for " << tag_pts << " points.\n";
-    for (uint64_t i = 0; i < nqueries * k; i++) {
-      tags[i] = all_tags[closest_points[i]];
+    // for (size_t i = 0; i < tag_pts; i++)
+    //   std::cout << i << " " << all_tags[i] << std::endl;
+    for (uint64_t i = 0; i < nqueries; i++) {
+      std::cout << i << ": ";
+      for (uint64_t j = 0; j < k; j++) {
+        std::cout << closest_points[i * k + j] << " ";
+      }
+      std::cout << std::endl;
     }
   }
 

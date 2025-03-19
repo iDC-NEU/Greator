@@ -30,6 +30,11 @@ else()
 endif()
 
 
+find_package(TBB REQUIRED)
+
+include_directories(${TBB_INCLUDE_DIRS})
+message(STATUS "TBB_INCLUDE_DIRS: ${TBB_INCLUDE_DIRS}")
+message(STATUS "TBB_LIBRARIES: ${TBB_LIBRARIES}")
 function(checkEnvAndSetLocalVar env_var msg local_var)
 	if (NOT EXISTS "$ENV{${env_var}}" )
 		message (FATAL_ERROR ${msg})
@@ -100,3 +105,6 @@ endif()
 add_subdirectory(src)
 add_subdirectory(tests)
 add_subdirectory(tests/utils)
+
+
+

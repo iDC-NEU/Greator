@@ -159,8 +159,8 @@ namespace diskann {
     virtual float compare(const T *a, const T *b, uint32_t length) const {
       uint32_t result = 0;
       for (uint32_t i = 0; i < length; i++) {
-        result += ((int32_t)((int16_t) a[i] - (int16_t) b[i])) *
-                  ((int32_t)((int16_t) a[i] - (int16_t) b[i]));
+        result += ((int32_t) ((int16_t) a[i] - (int16_t) b[i])) *
+                  ((int32_t) ((int16_t) a[i] - (int16_t) b[i]));
       }
       return (float) result;
     }

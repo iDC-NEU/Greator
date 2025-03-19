@@ -3,6 +3,10 @@
 
 set(CMAKE_CXX_STANDARD 14)
 
+find_package(TBB REQUIRED)
+
+
+include_directories(${TBB_INCLUDE_DIRS})
 if(MSVC)
 	add_subdirectory(dll)
 else()
@@ -14,5 +18,8 @@ else()
         v2/merge_insert.cpp)
 	add_library(${PROJECT_NAME} ${CPP_SOURCES})
 	add_library(${PROJECT_NAME}_s STATIC ${CPP_SOURCES})
+
+	target_link_libraries(${PROJECT_NAME} ${TBB_LIBRARIES})
+	target_link_libraries(${PROJECT_NAME}_s ${TBB_LIBRARIES})
 endif()
 install()
