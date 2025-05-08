@@ -440,7 +440,7 @@ namespace diskann {
           float djk = this->dist_cmp->compare(iter_left->second,
                                               iter_right->second, this->ndims);
           occlude_factor[t] =
-              (std::max)(occlude_factor[t], pool[t].distance / djk);
+              (std::max) (occlude_factor[t], pool[t].distance / djk);
         }
         start++;
       }
@@ -477,7 +477,7 @@ namespace diskann {
           this->disk_index->compute_pq_dists(p.id, &(pool[t].id), &djk, 1,
                                              scratch);
           occlude_factor[t] =
-              (std::max)(occlude_factor[t], pool[t].distance / djk);
+              (std::max) (occlude_factor[t], pool[t].distance / djk);
         }
         start++;
       }
@@ -667,19 +667,17 @@ namespace diskann {
       Timer io_w;
       this->disk_index->merge_write_through_diff_pages(start_ids, buf);
       io_time += (double) io_w.elapsed() / 1000000.0;
-
-      double e2e_time = ((double) delete_timer.elapsed()) / (1000000.0);
-      diskann::cout << "Processed Deletes in " << e2e_time << " s."
-                    << std::endl;
-      std::cout << "build_help_time_delete: " << build_help_time
-                << " , io_time: " << io_time << std::endl;
-      diskann::cout << "Writing header.\n";
-      if (this->id_map) {
-        process_topological_delete();
-        delete_nodes.clear();
-      }
-      aligned_free((void *) buf);
     }
+    double e2e_time = ((double) delete_timer.elapsed()) / (1000000.0);
+    diskann::cout << "Processed Deletes in " << e2e_time << " s." << std::endl;
+    std::cout << "build_help_time_delete: " << build_help_time
+              << " , io_time: " << io_time << std::endl;
+    diskann::cout << "Writing header.\n";
+    if (this->id_map) {
+      process_topological_delete();
+      delete_nodes.clear();
+    }
+    aligned_free((void *) buf);
 
     // write header
     // HEADER --> [_u32 #metadata items][_u32 1][_u64 nnodes][_u64 ndims][_u64
