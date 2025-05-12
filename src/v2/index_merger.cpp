@@ -1369,6 +1369,8 @@ namespace diskann {
 
           memcpy(disk_node.nbrs, nhood.data(),
                  disk_node.nnbrs * sizeof(uint32_t));
+          merge_nodes.emplace_back(disk_node.id, disk_node.nnbrs,
+                                   disk_node.nbrs);
         }
       }
       Timer io_w;
@@ -1380,7 +1382,11 @@ namespace diskann {
     std::cout << "build_help_time_patch: " << build_help_time
               << " , io_time: " << io_time << std::endl;
     output_writer.close();
-
+    if (this->id_map) {
+      process_topological_merge();
+      merge_nodes.clear();
+      // topological_merge_map.clear();
+    }
     aligned_free((void *) buf);
 
     // [_u64 file size][_u64 nnodes][_u64 medoid ID][_u64 max_node_len][_u64
