@@ -2000,7 +2000,7 @@ namespace diskann {
               this->disk_deleted_ids.end()) {
             std::vector<uint32_t> active_nbrs;
             for (const auto &nbr : nbrs) {
-              if (this->disk_deleted_ids.find(nbr) ==
+              if (this->disk_deleted_ids.find(nbr) !=
                   this->disk_deleted_ids.end()) {
                 active_nbrs.push_back(nbr);
               }
