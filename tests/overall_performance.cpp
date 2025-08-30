@@ -29,7 +29,7 @@
 #include <unistd.h>
 #endif
 
-#define NUM_INSERT_THREADS 10
+#define NUM_INSERT_THREADS 2
 #define NUM_DELETE_THREADS 1
 #define NUM_SEARCH_THREADS 3
 // #define NUM_INSERT_THREADS 1
@@ -525,10 +525,12 @@ void update(const std::string& data_path, const unsigned L_mem,
     std::string currentFileName =
         truthset_file + std::to_string(i + 1) + ".fbin";
     std::cout << "Current_GT_File: " << currentFileName << std::endl;
-    sync_search_kernel(query, query_num, query_aligned_dim, recall_at, Lsearch,
-                       sync_index, currentFileName, inactive_tags, res, true,
-                       true);
+    if ((i + 1) % 10 == 0)
+      sync_search_kernel(query, query_num, query_aligned_dim, recall_at,
+                         Lsearch, sync_index, currentFileName, inactive_tags,
+                         res, true, true);
   }
+  std::cout << "Update over" << std::endl;
   delete[] data_load;
 }
 

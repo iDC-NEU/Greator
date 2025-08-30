@@ -154,14 +154,14 @@ namespace diskann {
 
   template<typename T, typename TagT>
   PQFlashIndex<T, TagT>::~PQFlashIndex() {
-    Timer start;
-
-#ifndef EXEC_ENV_OLS
+    Timer  start;
+    double e1, e2, e3, e4, e5, e6, e7, e8, e9, e10;
+    // #ifndef EXEC_ENV_OLS
     if (data != nullptr) {
       delete[] data;
     }
-#endif
-
+    // #endif
+    e1 = (double) start.elapsed() / 1000000.0;
     diskann::cout << "Thread Data size: " << this->thread_data.size() << "\n";
     assert(!this->thread_data.empty());
 
@@ -169,23 +169,23 @@ namespace diskann {
     if (centroid_data != nullptr)
       aligned_free(centroid_data);
 #endif
-
+    e2 = (double) start.elapsed() / 1000000.0;
     // delete backing bufs for nhood and coord cache
     if (nhood_cache_buf != nullptr) {
       delete[] nhood_cache_buf;
       diskann::aligned_free(coord_cache_buf);
     }
-
+    e3 = (double) start.elapsed() / 1000000.0;
     if (load_flag) {
       this->destroy_thread_data();
       reader->close();
       // delete reader; //not deleting reader because it is now passed by ref.
     }
-
+    e4 = (double) start.elapsed() / 1000000.0;
     if (this->tags != nullptr) {
       delete[] tags;
     }
-
+    e5 = (double) start.elapsed() / 1000000.0;
 #ifndef EXEC_ENV_OLS
     if (medoids != nullptr)
       delete[] medoids;
@@ -193,6 +193,8 @@ namespace diskann {
 #ifdef USE_TCMALLOC
     MallocExtension::instance()->ReleaseFreeMemory();
 #endif
+    std::cout << e1 << " " << e2 - e1 << " " << e3 - e2 << " " << e4 - e3 << " "
+              << e5 - e4 << std::endl;
   }
 
   template<typename T, typename TagT>
@@ -700,7 +702,7 @@ namespace diskann {
     }
 
     // init_pagemutex
-    this->pagemutex.resize(pagesize + 1);
+    this->pagemutex.resize(pagesize + 10);
 
 #ifdef EXEC_ENV_OLS
     delete[] bytes;
@@ -1155,7 +1157,7 @@ namespace diskann {
           num_ios++;
         }
         io_timer.reset();
-
+        // 开启读锁
         for (auto &pageid : lock_pageid) {
           CASRWLock *pmutex = &pagemutex[pageid];
           pmutex->ReadLock();
@@ -1166,6 +1168,7 @@ namespace diskann {
         reader->read(frontier_read_reqs, ctx, false);  // synchronous IO linux
 #endif
 
+        // 结束读锁
         for (auto &pageid : lock_pageid) {
           CASRWLock *pmutex = &pagemutex[pageid];
           pmutex->ReadUnLock();
@@ -1198,6 +1201,8 @@ namespace diskann {
           }
           full_retset.push_back(
               Neighbor((unsigned) cached_nhood.first, cur_expanded_dist, true));
+          // std::cout << "Node #" << cached_nhood.first
+          //           << " 's dist: " << cur_expanded_dist << std::endl;
         }
         _u64      nnbrs = cached_nhood.second.first;
         unsigned *node_nbrs = cached_nhood.second.second;
@@ -1281,6 +1286,8 @@ namespace diskann {
           }
           full_retset.push_back(
               Neighbor(frontier_nhood.first, cur_expanded_dist, true));
+          // std::cout << "Node #" << frontier_nhood.first
+          //           << " 's dist: " << cur_expanded_dist << std::endl;
         }
         unsigned *node_nbrs = (node_buf + 1);
         // compute node_nbrs <-> query dist in PQ space
@@ -1350,7 +1357,10 @@ namespace diskann {
               [](const Neighbor &left, const Neighbor &right) {
                 return left.distance < right.distance;
               });
-
+    // std::cout << "Full retset size: " << full_retset.size() << std::endl;
+    // for (auto &ind : full_retset) {
+    //   std::cout << ind.id << " " << ind.distance << std::endl;
+    // }
     // return data to ConcurrentQueue only if popped from it
     if (passthrough_data == nullptr) {
       this->thread_data.push(data);
@@ -1367,6 +1377,7 @@ namespace diskann {
                                                float     *fp_dists,
                                                const _u32 count) {
     // TODO (perf) :: more efficient impl without using populate_chunk_distances
+    __sync_fetch_and_add(&this->cmp_count, count);
     ThreadData<T> data = this->thread_data.pop();
     while (data.scratch.sector_scratch == nullptr) {
       this->thread_data.wait_for_push_notify();
@@ -1407,6 +1418,7 @@ namespace diskann {
                                                float     *fp_dists,
                                                const _u32 count,
                                                uint8_t   *aligned_scratch) {
+    __sync_fetch_and_add(&this->cmp_count, count);
     const _u8    *src_ptr = this->data + (this->n_chunks * src);
     ThreadData<T> data;
     bool          popped = false;
@@ -1734,6 +1746,7 @@ namespace diskann {
     } else {
       tsl::robin_map<uint32_t, std::vector<uint32_t>> dmap;
       for (auto dnode : delete_set) {
+        // 扇区id+1
         uint32_t sector_id =
             1 + dnode / (sectors_per_scan * this->nnodes_per_sector);
 
@@ -1748,23 +1761,26 @@ namespace diskann {
         uint32_t              sector_id = pair.first;
         std::vector<uint32_t> dvec = pair.second;
 
-        offset_t sector_offset = sector_id * sectors_per_scan * SECTOR_LEN;
+        offset_t sector_offset =
+            sector_id * sectors_per_scan * SECTOR_LEN;  // 计算扇区起始偏移量
 
+        // 初始化读取操作
         uint32_t                 n_scanned = 0;
         std::vector<AlignedRead> reads(1);
-        reads[0].buf = buf;
-        reads[0].len = sectors_per_scan * SECTOR_LEN;
-        reads[0].offset = sector_offset;
+        reads[0].buf = buf;                            // 指定缓冲区
+        reads[0].len = sectors_per_scan * SECTOR_LEN;  // 读取长度为一个扇区
+        reads[0].offset = sector_offset;               // 指定偏移量
 
         CASRWLock *pmutex = &pagemutex[sector_id];
         pmutex->ReadLock();
-
+        // 读取第 i 个扇区的数据
         this->reader->read(reads, ctx);
         pmutex->ReadUnLock();
         for (auto &idx : dvec) {
           uint32_t offset_in_sector =
               idx % (sectors_per_scan * this->nnodes_per_sector);
 
+          // 指向节点数据的缓冲区位置
           char *node_buf = OFFSET_TO_NODE(buf, offset_in_sector);
           char *buf_start =
               backing_buf + (backing_buf_idx * backing_buf_unit_size);
@@ -1814,21 +1830,23 @@ namespace diskann {
   template<typename T, typename TagT>
   void PQFlashIndex<T, TagT>::reload_index(
       const std::string &disk_index_file,
-      const std::string &pq_compressed_vectors, const std::string &tags_file) {
+      const std::string &pq_compressed_vectors, const std::string &tags_file,
+      uint32_t node_num) {
     // reload PQ coords
     size_t npts_u64, nchunks_u64;
-    delete this->data;
+    // delete this->data;
 
     diskann::cout << "RELOAD: Loading compressed vectors from "
                   << pq_compressed_vectors << "\n";
-    diskann::load_bin<_u8>(pq_compressed_vectors, data, npts_u64, nchunks_u64);
+    // diskann::load_bin<_u8>(pq_compressed_vectors, data, npts_u64,
+    // nchunks_u64);
 
-    this->num_points = npts_u64;
-    this->n_chunks = nchunks_u64;
+    this->num_points = node_num;
+    // this->n_chunks = nchunks_u64;
 
     // close current FP
     // this->reader->deregister_all_threads();
-    this->reader->close();
+    // this->reader->close();
 
     diskann::cout << "RELOAD: Loading graph from " << disk_index_file << "\n";
     // read new graph from disk

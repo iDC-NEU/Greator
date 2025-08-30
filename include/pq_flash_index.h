@@ -196,7 +196,8 @@ namespace diskann {
         const uint32_t sectors_per_scan, bool id_map = false);
     DISKANN_DLLEXPORT void reload_index(const std::string &new_disk_index_path,
                                         const std::string &new_pq_coords_path,
-                                        const std::string &new_tags_file_path);
+                                        const std::string &new_tags_file_path,
+                                        uint32_t           node_num = 0);
     // DISKANN_DLLEXPORT void passthrough_write(char *buf, const uint64_t
     // offset,
     //                                         const uint64_t size);
@@ -205,6 +206,9 @@ namespace diskann {
     DISKANN_DLLEXPORT std::vector<_u8> deflate_vector(const T *vec);
     std::pair<_u8 *, _u32>             get_pq_config() {
                   return std::make_pair(this->data, (uint32_t) this->n_chunks);
+    }
+    void set_pq_data(_u8 *_data) {
+      this->data = _data;
     }
     DISKANN_DLLEXPORT TagT *get_tags() {
       return this->tags;
@@ -229,6 +233,7 @@ namespace diskann {
     // nbrs of node `i`: ((unsigned*)buf) + 1
     _u64 max_node_len = 0, nnodes_per_sector = 0, max_degree = 0;
     _u64 disk_nnodes = 0, disk_ndims = 0;
+    _u32 cmp_count = 0;
 
    protected:
     DISKANN_DLLEXPORT void use_medoids_data_as_centroids();
@@ -280,8 +285,9 @@ namespace diskann {
                   // closest centroid as the starting point of search
 
     // nhood_cache
-    unsigned                                     *nhood_cache_buf = nullptr;
-    tsl::robin_map<_u32, std::pair<_u32, _u32 *>> nhood_cache;
+    unsigned *nhood_cache_buf = nullptr;
+    tsl::robin_map<_u32, std::pair<_u32, _u32 *>>
+        nhood_cache;  // 三元组<id,hood_num,vector_hood>
 
     // coord_cache
     T                        *coord_cache_buf = nullptr;

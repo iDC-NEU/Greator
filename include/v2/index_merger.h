@@ -168,8 +168,8 @@ namespace diskann {
     tsl::robin_map<uint32_t, std::vector<uint32_t>> disk_deleted_nhoods;
     tsl::robin_set<uint32_t>                        disk_deleted_ids;
     std::vector<tsl::robin_set<uint32_t>>           mem_deleted_ids;
-    char *delete_backing_buf = nullptr;
-
+    char                 *delete_backing_buf = nullptr;
+    std::vector<uint32_t> insert_loc;
     // rename stuff
     tsl::robin_map<uint32_t, uint32_t>         rename_map;
     tsl::robin_map<uint32_t, uint32_t>         inverse_map;

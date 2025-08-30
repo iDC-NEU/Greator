@@ -1003,39 +1003,45 @@ namespace diskann {
 
     size_t train_size, train_dim;
     float *train_data;
-
-    auto   start = std::chrono::high_resolution_clock::now();
     double p_val = ((double) training_set_size / (double) points_num);
-    // generates random sample and sets it to train_data and updates train_size
-    gen_random_slice<T>(normalized_file_path, p_val, train_data, train_size,
-                        train_dim);
+    if (!file_exists(pq_pivots_path)) {
+      auto start = std::chrono::high_resolution_clock::now();
 
-    diskann::cout << "Generating PQ pivots with training data of size: "
-                  << train_size << " num PQ chunks: " << num_pq_chunks
-                  << std::endl;
-    generate_pq_pivots(train_data, train_size, (uint32_t) dim, 256,
-                       (uint32_t) num_pq_chunks, NUM_KMEANS, pq_pivots_path);
-    auto end = std::chrono::high_resolution_clock::now();
+      // generates random sample and sets it to train_data and updates
+      // train_size
+      gen_random_slice<T>(normalized_file_path, p_val, train_data, train_size,
+                          train_dim);
 
-    diskann::cout << "Pivots generated in "
-                  << std::chrono::duration<double>(end - start).count() << "s."
-                  << std::endl;
-    start = std::chrono::high_resolution_clock::now();
-    generate_pq_data_from_pivots<T>(normalized_file_path, 256,
-                                    (uint32_t) num_pq_chunks, pq_pivots_path,
-                                    pq_compressed_vectors_path);
-    delete[] train_data;
-    train_data = nullptr;
-    end = std::chrono::high_resolution_clock::now();
-    diskann::cout << "Compressed data generated and written in: "
-                  << std::chrono::duration<double>(end - start).count() << "s."
-                  << std::endl;
-    start = std::chrono::high_resolution_clock::now();
+      diskann::cout << "Generating PQ pivots with training data of size: "
+                    << train_size << " num PQ chunks: " << num_pq_chunks
+                    << std::endl;
+      generate_pq_pivots(train_data, train_size, (uint32_t) dim, 256,
+                         (uint32_t) num_pq_chunks, NUM_KMEANS, pq_pivots_path);
+      auto end = std::chrono::high_resolution_clock::now();
+
+      diskann::cout << "Pivots generated in "
+                    << std::chrono::duration<double>(end - start).count()
+                    << "s." << std::endl;
+      start = std::chrono::high_resolution_clock::now();
+      generate_pq_data_from_pivots<T>(normalized_file_path, 256,
+                                      (uint32_t) num_pq_chunks, pq_pivots_path,
+                                      pq_compressed_vectors_path);
+      delete[] train_data;
+      train_data = nullptr;
+      end = std::chrono::high_resolution_clock::now();
+      diskann::cout << "Compressed data generated and written in: "
+                    << std::chrono::duration<double>(end - start).count()
+                    << "s." << std::endl;
+    } else {
+      diskann::cout << "PQ File already in Index-File-Path!" << std::endl;
+    }
+
+    auto start = std::chrono::high_resolution_clock::now();
     diskann::build_merged_vamana_index<T>(
         normalized_file_path, _compareMetric, single_file_index, L, R, p_val,
         indexing_ram_budget, mem_index_path, medoids_path, centroids_path,
         tag_file);
-    end = std::chrono::high_resolution_clock::now();
+    auto end = std::chrono::high_resolution_clock::now();
     diskann::cout << "Vamana index built in: "
                   << std::chrono::duration<double>(end - start).count() << "s."
                   << std::endl;
